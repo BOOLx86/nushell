@@ -1,5 +1,6 @@
 mod conversions;
 mod core_commands;
+mod datatypes;
 mod date;
 mod default_context;
 mod deprecated;
@@ -23,6 +24,7 @@ mod viewers;
 
 pub use conversions::*;
 pub use core_commands::*;
+pub use datatypes::*;
 pub use date::*;
 pub use default_context::*;
 pub use deprecated::*;
