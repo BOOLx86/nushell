@@ -79,6 +79,10 @@ impl Command for SubCommand {
         "Performs HTTP POST operation."
     }
 
+    fn search_terms(&self) -> Vec<&str> {
+        vec!["network", "post", "send", "push", "http"]
+    }
+
     fn run(
         &self,
         engine_state: &EngineState,
@@ -351,7 +355,7 @@ fn helper(
                     return Ok(output);
                 }
                 if let Some(ext) = ext {
-                    match engine_state.find_decl(format!("from {}", ext).as_bytes()) {
+                    match engine_state.find_decl(format!("from {}", ext).as_bytes(), &[]) {
                         Some(converter_id) => engine_state.get_decl(converter_id).run(
                             engine_state,
                             stack,

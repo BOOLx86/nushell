@@ -45,7 +45,11 @@ impl Command for SubCommand {
     }
 
     fn usage(&self) -> &str {
-        "Get part of a string"
+        "Get part of a string. Note that the start is included but the end is excluded, and that the first character of a string is index 0."
+    }
+
+    fn search_terms(&self) -> Vec<&str> {
+        vec!["slice"]
     }
 
     fn run(
@@ -61,7 +65,7 @@ impl Command for SubCommand {
     fn examples(&self) -> Vec<Example> {
         vec![
             Example {
-                description: "Get a substring from the text",
+                description: "Get a substring \"nushell\" from the text \"good nushell\"",
                 example: " 'good nushell' | str substring [5 12]",
                 result: Some(Value::test_string("nushell")),
             },
@@ -243,7 +247,7 @@ fn process_arguments(options: &Arguments, head: Span) -> Result<(isize, isize), 
             let idx: Vec<&str> = val.split(',').collect();
 
             let start = idx
-                .get(0)
+                .first()
                 .ok_or_else(|| {
                     ShellError::UnsupportedInput("could not perform substring".to_string(), head)
                 })?

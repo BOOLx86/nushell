@@ -4,16 +4,16 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
 };
-use polars::prelude::IntoSeries;
+use polars::prelude::{IntoSeries, Utf8NameSpaceImpl};
 
 #[derive(Clone)]
 pub struct ReplaceAll;
 
 impl Command for ReplaceAll {
     fn name(&self) -> &str {
-        "dfr replace-all"
+        "replace-all"
     }
 
     fn usage(&self) -> &str {
@@ -34,13 +34,15 @@ impl Command for ReplaceAll {
                 "replacing string",
                 Some('r'),
             )
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
             .category(Category::Custom("dataframe".into()))
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
             description: "Replaces string",
-            example: "[abac abac abac] | dfr to-df | dfr replace-all -p a -r A",
+            example: "[abac abac abac] | into df | replace-all -p a -r A",
             result: Some(
                 NuDataFrame::try_from_columns(vec![Column::new(
                     "0".to_string(),

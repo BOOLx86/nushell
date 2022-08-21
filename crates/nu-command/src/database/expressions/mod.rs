@@ -1,12 +1,23 @@
+// Conversions between value and sqlparser objects
 mod alias;
-mod col;
+mod and;
+mod as_nu;
+mod field;
+mod function;
+mod or;
+mod over;
 
 use nu_protocol::engine::StateWorkingSet;
 
-use alias::AliasExpr;
-use col::ColExpr;
+pub(crate) use alias::AliasExpr;
+pub(crate) use and::AndExpr;
+pub(crate) use as_nu::ExprAsNu;
+pub(crate) use field::FieldExpr;
+pub(crate) use function::FunctionExpr;
+pub(crate) use or::OrExpr;
+pub(crate) use over::OverExpr;
 
-pub fn add_expression_decls(working_set: &mut StateWorkingSet) {
+pub fn add_expressions_decls(working_set: &mut StateWorkingSet) {
     macro_rules! bind_command {
             ( $command:expr ) => {
                 working_set.add_decl(Box::new($command));
@@ -17,5 +28,13 @@ pub fn add_expression_decls(working_set: &mut StateWorkingSet) {
         }
 
     // Series commands
-    bind_command!(AliasExpr, ColExpr);
+    bind_command!(
+        ExprAsNu,
+        AliasExpr,
+        AndExpr,
+        FieldExpr,
+        FunctionExpr,
+        OrExpr,
+        OverExpr
+    );
 }

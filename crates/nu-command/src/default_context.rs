@@ -1,10 +1,8 @@
 use nu_protocol::engine::{EngineState, StateWorkingSet};
 
-use std::path::Path;
-
 use crate::*;
 
-pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
+pub fn create_default_context() -> EngineState {
     let mut engine_state = EngineState::new();
 
     let delta = {
@@ -36,30 +34,39 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
             DefEnv,
             Describe,
             Do,
-            Du,
             Echo,
             ErrorMake,
             ExportAlias,
             ExportCommand,
             ExportDef,
             ExportDefEnv,
-            ExportEnv,
+            ExportEnvModule,
             ExportExtern,
+            ExportUse,
             Extern,
             For,
             Help,
             Hide,
-            History,
+            HideEnv,
             If,
             Ignore,
+            Overlay,
+            OverlayAdd,
+            OverlayList,
+            OverlayNew,
+            OverlayRemove,
             Let,
             Metadata,
             Module,
             Source,
-            Tutor,
             Use,
             Version,
         };
+
+        // Charts
+        bind_command! {
+            Histogram
+        }
 
         // Filters
         bind_command! {
@@ -74,6 +81,7 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
             DropColumn,
             DropNth,
             Each,
+            EachWhile,
             Empty,
             Every,
             Find,
@@ -113,6 +121,7 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
             SkipWhile,
             Sort,
             SortBy,
+            SplitList,
             Transpose,
             Uniq,
             Upsert,
@@ -122,6 +131,12 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
             Window,
             Wrap,
             Zip,
+        };
+
+        // Misc
+        bind_command! {
+            History,
+            Tutor,
         };
 
         // Path
@@ -144,6 +159,7 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
             Complete,
             Exec,
             External,
+            NuCheck,
             Ps,
             Sys,
         };
@@ -156,14 +172,19 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
             BuildString,
             Char,
             Decode,
+            Encode,
+            DecodeBase64,
+            EncodeBase64,
             DetectColumns,
             Format,
+            FileSize,
             Parse,
             Size,
             Split,
             SplitChars,
             SplitColumn,
             SplitRow,
+            SplitWords,
             Str,
             StrCamelCase,
             StrCapitalize,
@@ -184,8 +205,38 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
             StrStartsWith,
             StrSubstring,
             StrTrim,
+            StrTitleCase,
             StrUpcase
         };
+
+        // Bits
+        bind_command! {
+            Bits,
+            BitsAnd,
+            BitsNot,
+            BitsOr,
+            BitsXor,
+            BitsRotateLeft,
+            BitsRotateRight,
+            BitsShiftLeft,
+            BitsShiftRight,
+        }
+
+        // Bytes
+        bind_command! {
+            Bytes,
+            BytesLen,
+            BytesStartsWith,
+            BytesEndsWith,
+            BytesReverse,
+            BytesReplace,
+            BytesAdd,
+            BytesAt,
+            BytesIndexOf,
+            BytesCollect,
+            BytesRemove,
+            BytesBuild,
+        }
 
         // FileSystem
         bind_command! {
@@ -208,6 +259,7 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
             AnsiGradient,
             AnsiStrip,
             Clear,
+            Du,
             KeybindingsDefault,
             Input,
             KeybindingsListen,
@@ -265,6 +317,7 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
             ToJson,
             ToMd,
             ToNuon,
+            ToText,
             ToToml,
             ToTsv,
             ToCsv,
@@ -300,9 +353,14 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
         // Env
         bind_command! {
             Env,
+            ExportEnv,
             LetEnv,
             LoadEnv,
             WithEnv,
+            ConfigNu,
+            ConfigEnv,
+            ConfigMeta,
+            ConfigReset,
         };
 
         // Math
@@ -334,6 +392,7 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
             UrlPath,
             UrlQuery,
             UrlScheme,
+            Port,
         }
 
         // Random
@@ -352,6 +411,7 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
             Cal,
             Seq,
             SeqDate,
+            SeqChar,
         };
 
         // Hash
@@ -359,31 +419,22 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
             Hash,
             HashMd5::default(),
             HashSha256::default(),
-            Base64,
         };
 
         // Experimental
         bind_command! {
             ViewSource,
+            IsAdmin,
         };
 
         // Deprecated
         bind_command! {
-            PivotDeprecated,
+            HashBase64,
             StrDatetimeDeprecated,
             StrDecimalDeprecated,
             StrIntDeprecated,
-            MatchDeprecated,
-            NthDeprecated,
-            UnaliasDeprecated,
             StrFindReplaceDeprecated,
-            KeepDeprecated,
-            KeepUntilDeprecated,
-            KeepWhileDeprecated,
         };
-
-        #[cfg(feature = "dataframe")]
-        bind_command!(DataframeDeprecated);
 
         #[cfg(feature = "plugin")]
         bind_command!(Register);
@@ -391,7 +442,9 @@ pub fn create_default_context(cwd: impl AsRef<Path>) -> EngineState {
         working_set.render()
     };
 
-    let _ = engine_state.merge_delta(delta, None, &cwd);
+    if let Err(err) = engine_state.merge_delta(delta) {
+        eprintln!("Error creating default context: {:?}", err);
+    }
 
     engine_state
 }

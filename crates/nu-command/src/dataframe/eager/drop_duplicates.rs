@@ -2,9 +2,9 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
 };
-use polars::prelude::DistinctKeepStrategy;
+use polars::prelude::UniqueKeepStrategy;
 
 use super::super::values::utils::convert_columns_string;
 use super::super::values::{Column, NuDataFrame};
@@ -14,7 +14,7 @@ pub struct DropDuplicates;
 
 impl Command for DropDuplicates {
     fn name(&self) -> &str {
-        "dfr drop-duplicates"
+        "drop-duplicates"
     }
 
     fn usage(&self) -> &str {
@@ -34,13 +34,15 @@ impl Command for DropDuplicates {
                 "keeps last duplicate value (by default keeps first)",
                 Some('l'),
             )
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
             .category(Category::Custom("dataframe".into()))
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
             description: "drop duplicates",
-            example: "[[a b]; [1 2] [3 4] [1 2]] | dfr to-df | dfr drop-duplicates",
+            example: "[[a b]; [1 2] [3 4] [1 2]] | into df | drop-duplicates",
             result: Some(
                 NuDataFrame::try_from_columns(vec![
                     Column::new(
@@ -89,13 +91,13 @@ fn command(
     let subset_slice = subset.as_ref().map(|cols| &cols[..]);
 
     let keep_strategy = if call.has_flag("last") {
-        DistinctKeepStrategy::Last
+        UniqueKeepStrategy::Last
     } else {
-        DistinctKeepStrategy::First
+        UniqueKeepStrategy::First
     };
 
     df.as_ref()
-        .distinct(subset_slice, keep_strategy)
+        .unique(subset_slice, keep_strategy)
         .map_err(|e| {
             ShellError::GenericError(
                 "Error dropping duplicates".into(),

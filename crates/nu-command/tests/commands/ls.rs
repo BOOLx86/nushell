@@ -245,6 +245,42 @@ fn lists_all_hidden_files_when_glob_does_not_contain_dot() {
 }
 
 #[test]
+// TODO Remove this cfg value when we have an OS-agnostic way
+// of creating hidden files using the playground.
+#[cfg(unix)]
+fn glob_with_hidden_directory() {
+    Playground::setup("ls_test_8", |dirs, sandbox| {
+        sandbox.within(".dir_b").with_files(vec![
+            EmptyFile("andres.10.txt"),
+            EmptyFile("chicken_not_to_be_picked_up.100.txt"),
+            EmptyFile(".dotfile3"),
+        ]);
+
+        let actual = nu!(
+            cwd: dirs.test(), pipeline(
+            r#"
+                ls **/*
+                | length
+            "#
+        ));
+
+        assert_eq!(actual.out, "");
+        assert!(actual.err.contains("No matches found"));
+
+        // will list files if provide `-a` flag.
+        let actual = nu!(
+            cwd: dirs.test(), pipeline(
+            r#"
+                ls -a **/*
+                | length
+            "#
+        ));
+
+        assert_eq!(actual.out, "4");
+    })
+}
+
+#[test]
 #[cfg(unix)]
 fn fails_with_ls_to_dir_without_permission() {
     Playground::setup("ls_test_1", |dirs, sandbox| {
@@ -259,9 +295,20 @@ fn fails_with_ls_to_dir_without_permission() {
                 chmod 000 dir_a; ls dir_a
             "#
         ));
-        assert!(actual
-            .err
-            .contains("The permissions of 0 do not allow access for this user"));
+
+        let check_not_root = nu!(
+            cwd: dirs.test(), pipeline(
+                r#"
+                    id -u
+                "#
+        ));
+
+        assert!(
+            actual
+                .err
+                .contains("The permissions of 0 do not allow access for this user")
+                || check_not_root.out == "0"
+        );
     })
 }
 
@@ -343,4 +390,172 @@ fn list_all_columns() {
             "column names are incorrect for ls long"
         );
     });
+}
+
+#[test]
+fn lists_with_directory_flag() {
+    Playground::setup("ls_test_flag_directory_1", |dirs, sandbox| {
+        sandbox
+            .within("dir_files")
+            .with_files(vec![EmptyFile("nushell.json")])
+            .within("dir_empty");
+        let actual = nu!(
+            cwd: dirs.test(), pipeline(
+            r#"
+                cd dir_empty;
+                ['.' '././.' '..' '../dir_files' '../dir_files/*']
+                | each { |it| ls --directory $it }
+                | flatten
+                | get name
+                | to text
+            "#
+        ));
+        let expected = [".", ".", "..", "../dir_files", "../dir_files/nushell.json"].join("");
+        #[cfg(windows)]
+        let expected = expected.replace('/', "\\");
+        assert_eq!(
+            actual.out, expected,
+            "column names are incorrect for ls --directory (-D)"
+        );
+    });
+}
+
+#[test]
+fn lists_with_directory_flag_without_argument() {
+    Playground::setup("ls_test_flag_directory_2", |dirs, sandbox| {
+        sandbox
+            .within("dir_files")
+            .with_files(vec![EmptyFile("nushell.json")])
+            .within("dir_empty");
+        // Test if there are some files in the current directory
+        let actual = nu!(
+            cwd: dirs.test(), pipeline(
+            r#"
+                cd dir_files;
+                ls --directory
+                | get name
+                | to text
+            "#
+        ));
+        let expected = ".";
+        assert_eq!(
+            actual.out, expected,
+            "column names are incorrect for ls --directory (-D)"
+        );
+        // Test if there is no file in the current directory
+        let actual = nu!(
+            cwd: dirs.test(), pipeline(
+            r#"
+                cd dir_empty;
+                ls -D
+                | get name
+                | to text
+            "#
+        ));
+        let expected = ".";
+        assert_eq!(
+            actual.out, expected,
+            "column names are incorrect for ls --directory (-D)"
+        );
+    });
+}
+
+/// Rust's fs::metadata function is unable to read info for certain system files on Windows,
+/// like the `C:\Windows\System32\Configuration` folder. https://github.com/rust-lang/rust/issues/96980
+/// This test confirms that Nu can work around this successfully.
+#[test]
+#[cfg(windows)]
+fn can_list_system_folder() {
+    // the awkward `ls Configuration* | where name == "Configuration"` thing is for speed;
+    // listing the entire System32 folder is slow and `ls Configuration*` alone
+    // might return more than 1 file someday
+    let file_type = nu!(
+        cwd: "C:\\Windows\\System32", pipeline(
+        r#"ls Configuration* | where name == "Configuration" | get type.0"#
+    ));
+    assert_eq!(file_type.out, "dir");
+
+    let file_size = nu!(
+        cwd: "C:\\Windows\\System32", pipeline(
+        r#"ls Configuration* | where name == "Configuration" | get size.0"#
+    ));
+    assert!(file_size.out.trim() != "");
+
+    let file_modified = nu!(
+        cwd: "C:\\Windows\\System32", pipeline(
+        r#"ls Configuration* | where name == "Configuration" | get modified.0"#
+    ));
+    assert!(file_modified.out.trim() != "");
+
+    let file_accessed = nu!(
+        cwd: "C:\\Windows\\System32", pipeline(
+        r#"ls -l Configuration* | where name == "Configuration" | get accessed.0"#
+    ));
+    assert!(file_accessed.out.trim() != "");
+
+    let file_created = nu!(
+        cwd: "C:\\Windows\\System32", pipeline(
+        r#"ls -l Configuration* | where name == "Configuration" | get created.0"#
+    ));
+    assert!(file_created.out.trim() != "");
+
+    let ls_with_filter = nu!(
+        cwd: "C:\\Windows\\System32", pipeline(
+        r#"ls | where size > 10mb"#
+    ));
+    assert_eq!(ls_with_filter.err, "");
+}
+
+#[test]
+fn list_a_directory_not_exists() {
+    Playground::setup("ls_test_directory_not_exists", |dirs, _sandbox| {
+        let actual = nu!(cwd: dirs.test(), "ls a_directory_not_exists");
+        assert!(actual.err.contains("directory not found"));
+    })
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn list_directory_contains_invalid_utf8() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    Playground::setup(
+        "ls_test_directory_contains_invalid_utf8",
+        |dirs, _sandbox| {
+            let v: [u8; 4] = [7, 196, 144, 188];
+            let s = OsStr::from_bytes(&v);
+
+            let cwd = dirs.test();
+            let path = cwd.join(s);
+
+            std::fs::create_dir_all(&path).expect("failed to create directory");
+
+            let actual = nu!(cwd: cwd, "ls");
+
+            assert!(actual.out.contains("warning: get non-utf8 filename"));
+            assert!(actual.err.contains("No matches found for"));
+        },
+    )
+}
+
+#[test]
+fn list_ignores_ansi() {
+    Playground::setup("ls_test_ansi", |dirs, sandbox| {
+        sandbox.with_files(vec![
+            EmptyFile("los.txt"),
+            EmptyFile("tres.txt"),
+            EmptyFile("amigos.txt"),
+            EmptyFile("arepas.clu"),
+        ]);
+
+        let actual = nu!(
+            cwd: dirs.test(), pipeline(
+            r#"
+                ls | find .txt | each { ls $in.name } 
+            "#
+        ));
+
+        assert!(actual.err.is_empty());
+    })
 }

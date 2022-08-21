@@ -4,12 +4,13 @@ use log::trace;
 use miette::{IntoDiagnostic, Result};
 use nu_engine::convert_env_values;
 use nu_parser::parse;
+use nu_protocol::Type;
 use nu_protocol::{
     ast::Call,
     engine::{EngineState, Stack, StateWorkingSet},
     Config, PipelineData, Span, Value,
 };
-use std::io::Write;
+use nu_utils::stdout_write_all_and_flush;
 
 /// Main function used when a file path is found as argument for nu
 pub fn evaluate_file(
@@ -34,7 +35,7 @@ pub fn evaluate_file(
 
     let _ = parse(&mut working_set, Some(&path), &file, false, &[]);
 
-    if working_set.find_decl(b"main").is_some() {
+    if working_set.find_decl(b"main", &Type::Any).is_some() {
         let args = format!("main {}", args.join(" "));
 
         if !eval_source(
@@ -61,81 +62,78 @@ pub fn evaluate_file(
 }
 
 pub fn print_table_or_error(
-    engine_state: &EngineState,
+    engine_state: &mut EngineState,
     stack: &mut Stack,
     mut pipeline_data: PipelineData,
-    config: &Config,
-) {
+    config: &mut Config,
+) -> Option<i64> {
     let exit_code = match &mut pipeline_data {
         PipelineData::ExternalStream { exit_code, .. } => exit_code.take(),
         _ => None,
     };
 
-    match engine_state.find_decl("table".as_bytes()) {
+    // Change the engine_state config to use the passed in configuration
+    engine_state.set_config(config);
+
+    match engine_state.find_decl("table".as_bytes(), &[]) {
         Some(decl_id) => {
-            let table = engine_state.get_decl(decl_id).run(
-                engine_state,
-                stack,
-                &Call::new(Span::new(0, 0)),
-                pipeline_data,
-            );
+            let command = engine_state.get_decl(decl_id);
+            if command.get_block_id().is_some() {
+                print_or_exit(pipeline_data, engine_state, config);
+            } else {
+                let table = command.run(
+                    engine_state,
+                    stack,
+                    &Call::new(Span::new(0, 0)),
+                    pipeline_data,
+                );
 
-            match table {
-                Ok(table) => {
-                    for item in table {
-                        let stdout = std::io::stdout();
-
-                        if let Value::Error { error } = item {
-                            let working_set = StateWorkingSet::new(engine_state);
-
-                            report_error(&working_set, &error);
-
-                            std::process::exit(1);
-                        }
-
-                        let mut out = item.into_string("\n", config);
-                        out.push('\n');
-
-                        match stdout.lock().write_all(out.as_bytes()) {
-                            Ok(_) => (),
-                            Err(err) => eprintln!("{}", err),
-                        };
+                match table {
+                    Ok(table) => {
+                        print_or_exit(table, engine_state, config);
                     }
-                }
-                Err(error) => {
-                    let working_set = StateWorkingSet::new(engine_state);
+                    Err(error) => {
+                        let working_set = StateWorkingSet::new(engine_state);
 
-                    report_error(&working_set, &error);
+                        report_error(&working_set, &error);
 
-                    std::process::exit(1);
+                        std::process::exit(1);
+                    }
                 }
             }
         }
         None => {
-            for item in pipeline_data {
-                let stdout = std::io::stdout();
-
-                if let Value::Error { error } = item {
-                    let working_set = StateWorkingSet::new(engine_state);
-
-                    report_error(&working_set, &error);
-
-                    std::process::exit(1);
-                }
-
-                let mut out = item.into_string("\n", config);
-                out.push('\n');
-
-                match stdout.lock().write_all(out.as_bytes()) {
-                    Ok(_) => (),
-                    Err(err) => eprintln!("{}", err),
-                };
-            }
+            print_or_exit(pipeline_data, engine_state, config);
         }
     };
 
     // Make sure everything has finished
     if let Some(exit_code) = exit_code {
-        let _: Vec<_> = exit_code.into_iter().collect();
+        let mut exit_code: Vec<_> = exit_code.into_iter().map(|(value, _)| value).collect();
+        exit_code
+            .pop()
+            .and_then(|last_exit_code| match last_exit_code {
+                Value::Int { val: code, .. } => Some(code),
+                _ => None,
+            })
+    } else {
+        None
+    }
+}
+
+fn print_or_exit(pipeline_data: PipelineData, engine_state: &mut EngineState, config: &Config) {
+    for item in pipeline_data {
+        if let Value::Error { error } = item {
+            let working_set = StateWorkingSet::new(engine_state);
+
+            report_error(&working_set, &error);
+
+            std::process::exit(1);
+        }
+
+        let mut out = item.into_string("\n", config);
+        out.push('\n');
+
+        let _ = stdout_write_all_and_flush(out).map_err(|err| eprintln!("{}", err));
     }
 }

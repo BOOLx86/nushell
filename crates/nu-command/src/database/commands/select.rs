@@ -3,16 +3,17 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, SyntaxShape, Value,
+    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, Span, SyntaxShape,
+    Type, Value,
 };
-use sqlparser::ast::{Query, Select, SelectItem, SetExpr};
+use sqlparser::ast::{Query, Select, SelectItem, SetExpr, Statement};
 
 #[derive(Clone)]
 pub struct ProjectionDb;
 
 impl Command for ProjectionDb {
     fn name(&self) -> &str {
-        "db select"
+        "select"
     }
 
     fn usage(&self) -> &str {
@@ -26,6 +27,8 @@ impl Command for ProjectionDb {
                 SyntaxShape::Any,
                 "Select expression(s) on the table",
             )
+            .input_type(Type::Custom("database".into()))
+            .output_type(Type::Custom("database".into()))
             .category(Category::Custom("database".into()))
     }
 
@@ -37,13 +40,43 @@ impl Command for ProjectionDb {
         vec![
             Example {
                 description: "selects a column from a database",
-                example: "db open db.mysql | db select a",
-                result: None,
+                example: "open db.sqlite | into db | select a | describe",
+                result: Some(Value::Record {
+                    cols: vec!["connection".into(), "query".into()],
+                    vals: vec![
+                        Value::String {
+                            val: "db.sqlite".into(),
+                            span: Span::test_data(),
+                        },
+                        Value::String {
+                            val: "SELECT a".into(),
+                            span: Span::test_data(),
+                        },
+                    ],
+                    span: Span::test_data(),
+                }),
             },
             Example {
-                description: "selects columns from a database",
-                example: "db open db.mysql | db select a b c",
-                result: None,
+                description: "selects columns from a database using alias",
+                example: r#"open db.sqlite
+    | into db
+    | select (field a | as new_a) b c
+    | from table table_1
+    | describe"#,
+                result: Some(Value::Record {
+                    cols: vec!["connection".into(), "query".into()],
+                    vals: vec![
+                        Value::String {
+                            val: "db.sqlite".into(),
+                            span: Span::test_data(),
+                        },
+                        Value::String {
+                            val: "SELECT a AS new_a, b, c FROM table_1".into(),
+                            span: Span::test_data(),
+                        },
+                    ],
+                    span: Span::test_data(),
+                }),
             },
         ]
     }
@@ -63,17 +96,17 @@ impl Command for ProjectionDb {
         let projection = SelectDb::extract_selects(value)?;
 
         let mut db = SQLiteDatabase::try_from_pipeline(input, call.head)?;
-        db.query = match db.query {
-            None => Some(create_query(projection)),
-            Some(query) => Some(modify_query(query, projection)),
+        db.statement = match db.statement {
+            None => Some(create_statement(projection)),
+            Some(statement) => Some(modify_statement(statement, projection, call.head)?),
         };
 
         Ok(db.into_value(call.head).into_pipeline_data())
     }
 }
 
-fn create_query(expressions: Vec<SelectItem>) -> Query {
-    Query {
+fn create_statement(expressions: Vec<SelectItem>) -> Statement {
+    let query = Query {
         with: None,
         body: SetExpr::Select(Box::new(create_select(expressions))),
         order_by: Vec::new(),
@@ -81,22 +114,34 @@ fn create_query(expressions: Vec<SelectItem>) -> Query {
         offset: None,
         fetch: None,
         lock: None,
-    }
-}
-
-fn modify_query(mut query: Query, expressions: Vec<SelectItem>) -> Query {
-    query.body = match query.body {
-        SetExpr::Select(select) => SetExpr::Select(Box::new(modify_select(select, expressions))),
-        _ => SetExpr::Select(Box::new(create_select(expressions))),
     };
 
-    query
+    Statement::Query(Box::new(query))
 }
 
-fn modify_select(select: Box<Select>, projection: Vec<SelectItem>) -> Select {
-    Select {
-        projection,
-        ..select.as_ref().clone()
+fn modify_statement(
+    mut statement: Statement,
+    expressions: Vec<SelectItem>,
+    span: Span,
+) -> Result<Statement, ShellError> {
+    match statement {
+        Statement::Query(ref mut query) => {
+            match query.body {
+                SetExpr::Select(ref mut select) => select.as_mut().projection = expressions,
+                _ => {
+                    query.as_mut().body = SetExpr::Select(Box::new(create_select(expressions)));
+                }
+            };
+
+            Ok(statement)
+        }
+        s => Err(ShellError::GenericError(
+            "Connection doesn't define a statement".into(),
+            format!("Expected a connection with query. Got {}", s),
+            Some(span),
+            None,
+            Vec::new(),
+        )),
     }
 }
 
@@ -114,5 +159,23 @@ fn create_select(projection: Vec<SelectItem>) -> Select {
         distribute_by: Vec::new(),
         sort_by: Vec::new(),
         having: None,
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::super::super::expressions::{AliasExpr, FieldExpr};
+    use super::super::FromDb;
+    use super::*;
+    use crate::database::test_database::test_database;
+
+    #[test]
+    fn test_examples() {
+        test_database(vec![
+            Box::new(ProjectionDb {}),
+            Box::new(FromDb {}),
+            Box::new(FieldExpr {}),
+            Box::new(AliasExpr {}),
+        ])
     }
 }

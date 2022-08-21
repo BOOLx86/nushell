@@ -3,7 +3,7 @@ use super::super::super::values::{Column, NuDataFrame};
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, Type, Value,
 };
 use polars::prelude::{IntoSeries, SortOptions};
 
@@ -12,7 +12,7 @@ pub struct ArgSort;
 
 impl Command for ArgSort {
     fn name(&self) -> &str {
-        "dfr arg-sort"
+        "arg-sort"
     }
 
     fn usage(&self) -> &str {
@@ -23,6 +23,8 @@ impl Command for ArgSort {
         Signature::build(self.name())
             .switch("reverse", "reverse order", Some('r'))
             .switch("nulls-last", "nulls ordered last", Some('n'))
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
             .category(Category::Custom("dataframe".into()))
     }
 
@@ -30,7 +32,7 @@ impl Command for ArgSort {
         vec![
             Example {
                 description: "Returns indexes for a sorted series",
-                example: "[1 2 2 3 3] | dfr to-df | dfr arg-sort",
+                example: "[1 2 2 3 3] | into df | arg-sort",
                 result: Some(
                     NuDataFrame::try_from_columns(vec![Column::new(
                         "arg_sort".to_string(),
@@ -48,7 +50,7 @@ impl Command for ArgSort {
             },
             Example {
                 description: "Returns indexes for a sorted series",
-                example: "[1 2 2 3 3] | dfr to-df | dfr arg-sort -r",
+                example: "[1 2 2 3 3] | into df | arg-sort -r",
                 result: Some(
                     NuDataFrame::try_from_columns(vec![Column::new(
                         "arg_sort".to_string(),

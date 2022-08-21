@@ -3,16 +3,16 @@ use super::super::super::values::{Column, NuDataFrame};
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, Type, Value,
 };
-use polars::prelude::IntoSeries;
+use polars::prelude::{IntoSeries, Utf8NameSpaceImpl};
 
 #[derive(Clone)]
 pub struct StrLengths;
 
 impl Command for StrLengths {
     fn name(&self) -> &str {
-        "dfr str-lengths"
+        "str-lengths"
     }
 
     fn usage(&self) -> &str {
@@ -20,13 +20,16 @@ impl Command for StrLengths {
     }
 
     fn signature(&self) -> Signature {
-        Signature::build(self.name()).category(Category::Custom("dataframe".into()))
+        Signature::build(self.name())
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
+            .category(Category::Custom("dataframe".into()))
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
             description: "Returns string lengths",
-            example: "[a ab abc] | dfr to-df | dfr str-lengths",
+            example: "[a ab abc] | into df | str-lengths",
             result: Some(
                 NuDataFrame::try_from_columns(vec![Column::new(
                     "0".to_string(),

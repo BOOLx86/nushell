@@ -4,16 +4,16 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
 };
-use polars::prelude::IntoSeries;
+use polars::prelude::{IntoSeries, Utf8NameSpaceImpl};
 
 #[derive(Clone)]
 pub struct Concatenate;
 
 impl Command for Concatenate {
     fn name(&self) -> &str {
-        "dfr concatenate"
+        "concatenate"
     }
 
     fn usage(&self) -> &str {
@@ -27,14 +27,16 @@ impl Command for Concatenate {
                 SyntaxShape::Any,
                 "Other array with string to be concatenated",
             )
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
             .category(Category::Custom("dataframe".into()))
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
             description: "Concatenate string",
-            example: r#"let other = ([za xs cd] | dfr to-df);
-    [abc abc abc] | dfr to-df | dfr concatenate $other"#,
+            example: r#"let other = ([za xs cd] | into df);
+    [abc abc abc] | into df | concatenate $other"#,
             result: Some(
                 NuDataFrame::try_from_columns(vec![Column::new(
                     "0".to_string(),

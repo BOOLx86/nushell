@@ -4,7 +4,7 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
 };
 use polars::prelude::IntoSeries;
 
@@ -13,7 +13,7 @@ pub struct StrFTime;
 
 impl Command for StrFTime {
     fn name(&self) -> &str {
-        "dfr strftime"
+        "strftime"
     }
 
     fn usage(&self) -> &str {
@@ -23,6 +23,8 @@ impl Command for StrFTime {
     fn signature(&self) -> Signature {
         Signature::build(self.name())
             .required("fmt", SyntaxShape::String, "Format rule")
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
             .category(Category::Custom("dataframe".into()))
     }
 
@@ -30,8 +32,8 @@ impl Command for StrFTime {
         vec![Example {
             description: "Formats date",
             example: r#"let dt = ('2020-08-04T16:39:18+00:00' | into datetime -z 'UTC');
-    let df = ([$dt $dt] | dfr to-df);
-    $df | dfr strftime "%Y/%m/%d""#,
+    let df = ([$dt $dt] | into df);
+    $df | strftime "%Y/%m/%d""#,
             result: Some(
                 NuDataFrame::try_from_columns(vec![Column::new(
                     "0".to_string(),

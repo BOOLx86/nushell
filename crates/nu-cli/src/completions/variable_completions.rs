@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct VariableCompletion {
-    engine_state: Arc<EngineState>,
+    engine_state: Arc<EngineState>, // TODO: Is engine state necessary? It's already a part of working set in fetch()
     stack: Stack,
     var_context: (Vec<u8>, Vec<Vec<u8>>), // tuple with $var and the sublevels (.b.c.d)
 }
@@ -41,7 +41,7 @@ impl Completer for VariableCompletion {
         options: &CompletionOptions,
     ) -> Vec<Suggestion> {
         let mut output = vec![];
-        let builtins = ["$nu", "$in", "$config", "$env", "$nothing"];
+        let builtins = ["$nu", "$in", "$env", "$nothing"];
         let var_str = std::str::from_utf8(&self.var_context.0)
             .unwrap_or("")
             .to_lowercase();
@@ -70,7 +70,18 @@ impl Completer for VariableCompletion {
                         self.var_context.1.clone().into_iter().skip(1).collect();
 
                     if let Some(val) = env_vars.get(&target_var_str) {
-                        return nested_suggestions(val.clone(), nested_levels, current_span);
+                        for suggestion in
+                            nested_suggestions(val.clone(), nested_levels, current_span)
+                        {
+                            if options
+                                .match_algorithm
+                                .matches_u8(suggestion.value.as_bytes(), &prefix)
+                            {
+                                output.push(suggestion);
+                            }
+                        }
+
+                        return output;
                     }
                 } else {
                     // No nesting provided, return all env vars
@@ -84,6 +95,7 @@ impl Completer for VariableCompletion {
                                 description: None,
                                 extra: None,
                                 span: current_span,
+                                append_whitespace: false,
                             });
                         }
                     }
@@ -104,7 +116,18 @@ impl Completer for VariableCompletion {
                         end: current_span.end,
                     },
                 ) {
-                    return nested_suggestions(nuval, self.var_context.1.clone(), current_span);
+                    for suggestion in
+                        nested_suggestions(nuval, self.var_context.1.clone(), current_span)
+                    {
+                        if options
+                            .match_algorithm
+                            .matches_u8(suggestion.value.as_bytes(), &prefix)
+                        {
+                            output.push(suggestion);
+                        }
+                    }
+
+                    return output;
                 }
             }
 
@@ -121,7 +144,18 @@ impl Completer for VariableCompletion {
 
                 // If the value exists and it's of type Record
                 if let Ok(value) = var {
-                    return nested_suggestions(value, self.var_context.1.clone(), current_span);
+                    for suggestion in
+                        nested_suggestions(value, self.var_context.1.clone(), current_span)
+                    {
+                        if options
+                            .match_algorithm
+                            .matches_u8(suggestion.value.as_bytes(), &prefix)
+                        {
+                            output.push(suggestion);
+                        }
+                    }
+
+                    return output;
                 }
             }
         }
@@ -137,39 +171,57 @@ impl Completer for VariableCompletion {
                     description: None,
                     extra: None,
                     span: current_span,
+                    append_whitespace: false,
                 });
             }
         }
 
+        // TODO: The following can be refactored (see find_commands_by_predicate() used in
+        // command_completions).
+        let mut removed_overlays = vec![];
         // Working set scope vars
-        for scope in &working_set.delta.scope {
-            for v in &scope.vars {
-                if options.match_algorithm.matches_u8(v.0, &prefix) {
-                    output.push(Suggestion {
-                        value: String::from_utf8_lossy(v.0).to_string(),
-                        description: None,
-                        extra: None,
-                        span: current_span,
-                    });
+        for scope_frame in working_set.delta.scope.iter().rev() {
+            for overlay_frame in scope_frame
+                .active_overlays(&mut removed_overlays)
+                .iter()
+                .rev()
+            {
+                for v in &overlay_frame.vars {
+                    if options.match_algorithm.matches_u8(v.0, &prefix) {
+                        output.push(Suggestion {
+                            value: String::from_utf8_lossy(v.0).to_string(),
+                            description: None,
+                            extra: None,
+                            span: current_span,
+                            append_whitespace: false,
+                        });
+                    }
                 }
             }
         }
 
         // Permanent state vars
-        for scope in &self.engine_state.scope {
-            for v in &scope.vars {
+        // for scope in &self.engine_state.scope {
+        for overlay_frame in self
+            .engine_state
+            .active_overlays(&removed_overlays)
+            .iter()
+            .rev()
+        {
+            for v in &overlay_frame.vars {
                 if options.match_algorithm.matches_u8(v.0, &prefix) {
                     output.push(Suggestion {
                         value: String::from_utf8_lossy(v.0).to_string(),
                         description: None,
                         extra: None,
                         span: current_span,
+                        append_whitespace: false,
                     });
                 }
             }
         }
 
-        output.dedup();
+        output.dedup(); // TODO: Removes only consecutive duplicates, is it intended?
 
         output
     }
@@ -198,6 +250,7 @@ fn nested_suggestions(
                     description: None,
                     extra: None,
                     span: current_span,
+                    append_whitespace: false,
                 });
             }
 

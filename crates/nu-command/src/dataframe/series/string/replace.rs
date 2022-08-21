@@ -4,16 +4,16 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
 };
-use polars::prelude::IntoSeries;
+use polars::prelude::{IntoSeries, Utf8NameSpaceImpl};
 
 #[derive(Clone)]
 pub struct Replace;
 
 impl Command for Replace {
     fn name(&self) -> &str {
-        "dfr replace"
+        "replace"
     }
 
     fn usage(&self) -> &str {
@@ -34,13 +34,15 @@ impl Command for Replace {
                 "replacing string",
                 Some('r'),
             )
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
             .category(Category::Custom("dataframe".into()))
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
             description: "Replaces string",
-            example: "[abc abc abc] | dfr to-df | dfr replace -p ab -r AB",
+            example: "[abc abc abc] | into df | replace -p ab -r AB",
             result: Some(
                 NuDataFrame::try_from_columns(vec![Column::new(
                     "0".to_string(),

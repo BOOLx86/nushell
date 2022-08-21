@@ -1,12 +1,13 @@
 use nu_test_support::{nu, pipeline};
 
+#[cfg(feature = "database")]
 #[test]
 fn can_query_single_table() {
     let actual = nu!(
         cwd: "tests/fixtures/formats", pipeline(
         r#"
             open sample.db
-            | db query "select * from strings"
+            | query db "select * from strings"
             | where x =~ ell
             | length
         "#
@@ -15,25 +16,27 @@ fn can_query_single_table() {
     assert_eq!(actual.out, "4");
 }
 
+#[cfg(feature = "database")]
 #[test]
 fn invalid_sql_fails() {
     let actual = nu!(
         cwd: "tests/fixtures/formats", pipeline(
         r#"
             open sample.db
-            | db query "select *asdfasdf"
+            | query db "select *asdfasdf"
         "#
     ));
 
     assert!(actual.err.contains("syntax error"));
 }
 
+#[cfg(feature = "database")]
 #[test]
 fn invalid_input_fails() {
     let actual = nu!(
     cwd: "tests/fixtures/formats", pipeline(
         r#"
-            "foo" | db query "select * from asdf"
+            "foo" | query db "select * from asdf"
         "#
     ));
 

@@ -1,11 +1,17 @@
+use std::fs::read_link;
 use std::path::PathBuf;
 
 use nu_engine::env::current_dir;
 use nu_engine::CallExt;
-use nu_path::canonicalize_with;
+use nu_path::{canonicalize_with, expand_path_with};
 use nu_protocol::ast::Call;
 use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{Category, Example, PipelineData, ShellError, Signature, Spanned, SyntaxShape};
+use nu_protocol::{
+    Category, Example, IntoInterruptiblePipelineData, PipelineData, ShellError, Signature, Span,
+    Spanned, SyntaxShape, Value,
+};
+
+use super::util::try_interaction;
 
 use crate::filesystem::util::FileStructure;
 
@@ -13,6 +19,7 @@ const GLOB_PARAMS: nu_glob::MatchOptions = nu_glob::MatchOptions {
     case_sensitive: true,
     require_literal_separator: false,
     require_literal_leading_dot: false,
+    recursive_match_hidden_dir: true,
 };
 
 #[derive(Clone)]
@@ -41,9 +48,19 @@ impl Command for Cp {
                 "copy recursively through subdirectories",
                 Some('r'),
             )
+            .switch(
+                "verbose",
+                "do copy in verbose mode (default:false)",
+                Some('v'),
+            )
             // TODO: add back in additional features
             // .switch("force", "suppress error when no file", Some('f'))
-            // .switch("interactive", "ask user to confirm action", Some('i'))
+            .switch("interactive", "ask user to confirm action", Some('i'))
+            .switch(
+                "no-symlink",
+                "no symbolic links are followed, only works if -r is active",
+                Some('n'),
+            )
             .category(Category::FileSystem)
     }
 
@@ -55,12 +72,34 @@ impl Command for Cp {
         _input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
         let src: Spanned<String> = call.req(engine_state, stack, 0)?;
+        let src = {
+            Spanned {
+                item: match strip_ansi_escapes::strip(&src.item) {
+                    Ok(item) => String::from_utf8(item).unwrap_or(src.item),
+                    Err(_) => src.item,
+                },
+                span: src.span,
+            }
+        };
         let dst: Spanned<String> = call.req(engine_state, stack, 1)?;
         let recursive = call.has_flag("recursive");
+        let verbose = call.has_flag("verbose");
+        let interactive = call.has_flag("interactive");
 
-        let path = current_dir(engine_state, stack)?;
-        let source = path.join(src.item.as_str());
-        let destination = path.join(dst.item.as_str());
+        let current_dir_path = current_dir(engine_state, stack)?;
+        let source = current_dir_path.join(src.item.as_str());
+        let destination = current_dir_path.join(dst.item.as_str());
+
+        let path_last_char = destination.as_os_str().to_string_lossy().chars().last();
+        let is_directory = path_last_char == Some('/') || path_last_char == Some('\\');
+        if is_directory && !destination.exists() {
+            return Err(ShellError::DirectoryNotFound(
+                dst.span,
+                Some("destination directory does not exist".to_string()),
+            ));
+        }
+        let ctrlc = engine_state.ctrlc.clone();
+        let span = call.head;
 
         let sources: Vec<_> = match nu_glob::glob_with(&source.to_string_lossy(), GLOB_PARAMS) {
             Ok(files) => files.collect(),
@@ -107,6 +146,8 @@ impl Command for Cp {
             ));
         }
 
+        let mut result = Vec::new();
+
         for entry in sources.into_iter().flatten() {
             let mut sources = FileStructure::new();
             sources.walk_decorate(&entry, engine_state, stack)?;
@@ -114,7 +155,7 @@ impl Command for Cp {
             if entry.is_file() {
                 let sources = sources.paths_applying_with(|(source_file, _depth_level)| {
                     if destination.is_dir() {
-                        let mut dest = canonicalize_with(&dst.item, &path)?;
+                        let mut dest = canonicalize_with(&dst.item, &current_dir_path)?;
                         if let Some(name) = entry.file_name() {
                             dest.push(name);
                         }
@@ -126,15 +167,27 @@ impl Command for Cp {
 
                 for (src, dst) in sources {
                     if src.is_file() {
-                        std::fs::copy(src, dst).map_err(|e| {
-                            ShellError::GenericError(
-                                e.to_string(),
-                                e.to_string(),
-                                Some(call.head),
+                        let dst =
+                            canonicalize_with(dst.as_path(), &current_dir_path).unwrap_or(dst);
+                        let res = if src == dst {
+                            let message = format!(
+                                "src {:?} and dst {:?} are identical(not copied)",
+                                source, destination
+                            );
+
+                            return Err(ShellError::GenericError(
+                                "Copy aborted".into(),
+                                message,
+                                Some(span),
                                 None,
                                 Vec::new(),
-                            )
-                        })?;
+                            ));
+                        } else if interactive && dst.exists() {
+                            interactive_copy(interactive, src, dst, span, copy_file)
+                        } else {
+                            copy_file(src, dst, span)
+                        };
+                        result.push(res);
                     }
                 }
             } else if entry.is_dir() {
@@ -165,9 +218,23 @@ impl Command for Cp {
                     )
                 })?;
 
+                let not_follow_symlink = call.has_flag("no-symlink");
                 let sources = sources.paths_applying_with(|(source_file, depth_level)| {
                     let mut dest = destination.clone();
-                    let path = canonicalize_with(&source_file, &path)?;
+
+                    let path = if not_follow_symlink {
+                        expand_path_with(&source_file, &current_dir_path)
+                    } else {
+                        canonicalize_with(&source_file, &current_dir_path).or_else(|err| {
+                            // check if dangling symbolic link.
+                            let path = expand_path_with(&source_file, &current_dir_path);
+                            if path.is_symlink() && !path.exists() {
+                                Ok(path)
+                            } else {
+                                Err(err)
+                            }
+                        })?
+                    };
 
                     #[allow(clippy::needless_collect)]
                     let comps: Vec<_> = path
@@ -196,23 +263,30 @@ impl Command for Cp {
                             )
                         })?;
                     }
-
-                    if s.is_file() {
-                        std::fs::copy(&s, &d).map_err(|e| {
-                            ShellError::GenericError(
-                                e.to_string(),
-                                e.to_string(),
-                                Some(call.head),
-                                None,
-                                Vec::new(),
-                            )
-                        })?;
-                    }
+                    if s.is_symlink() && not_follow_symlink {
+                        let res = if interactive && d.exists() {
+                            interactive_copy(interactive, s, d, span, copy_symlink)
+                        } else {
+                            copy_symlink(s, d, span)
+                        };
+                        result.push(res);
+                    } else if s.is_file() {
+                        let res = if interactive && d.exists() {
+                            interactive_copy(interactive, s, d, span, copy_file)
+                        } else {
+                            copy_file(s, d, span)
+                        };
+                        result.push(res);
+                    };
                 }
             }
         }
 
-        Ok(PipelineData::new(call.head))
+        if verbose {
+            Ok(result.into_iter().into_pipeline_data(ctrlc))
+        } else {
+            Ok(PipelineData::new(span))
+        }
     }
 
     fn examples(&self) -> Vec<Example> {
@@ -227,185 +301,99 @@ impl Command for Cp {
                 example: "cp -r dir_a dir_b",
                 result: None,
             },
+            Example {
+                description: "Recursively copy dir_a to dir_b, and print the feedbacks",
+                example: "cp -r -v dir_a dir_b",
+                result: None,
+            },
+            Example {
+                description: "Move many files into a directory",
+                example: "cp *.txt dir_a",
+                result: None,
+            },
         ]
     }
+}
 
-    //     let mut sources =
-    //         nu_glob::glob(&source.to_string_lossy()).map_or_else(|_| Vec::new(), Iterator::collect);
-    //     if sources.is_empty() {
-    //         return Err(ShellError::FileNotFound(call.positional[0].span));
-    //     }
+fn interactive_copy(
+    interactive: bool,
+    src: PathBuf,
+    dst: PathBuf,
+    span: Span,
+    copy_impl: impl Fn(PathBuf, PathBuf, Span) -> Value,
+) -> Value {
+    let (interaction, confirmed) =
+        try_interaction(interactive, "cp: overwrite", &dst.to_string_lossy());
+    if let Err(e) = interaction {
+        Value::Error {
+            error: ShellError::GenericError(
+                e.to_string(),
+                e.to_string(),
+                Some(span),
+                None,
+                Vec::new(),
+            ),
+        }
+    } else if !confirmed {
+        let msg = format!("{:} not copied to {:}", src.display(), dst.display());
+        Value::String { val: msg, span }
+    } else {
+        copy_impl(src, dst, span)
+    }
+}
 
-    //     if sources.len() > 1 && !destination.is_dir() {
-    //         return Err(ShellError::MoveNotPossible {
-    //             source_message: "Can't move many files".to_string(),
-    //             source_span: call.positional[0].span,
-    //             destination_message: "into single file".to_string(),
-    //             destination_span: call.positional[1].span,
-    //         });
-    //     }
+fn copy_file(src: PathBuf, dst: PathBuf, span: Span) -> Value {
+    match std::fs::copy(&src, &dst) {
+        Ok(_) => {
+            let msg = format!("copied {:} to {:}", src.display(), dst.display());
+            Value::String { val: msg, span }
+        }
+        Err(e) => Value::Error {
+            error: ShellError::FileNotFoundCustom(format!("copy file {src:?} failed: {e}"), span),
+        },
+    }
+}
 
-    //     let any_source_is_dir = sources.iter().any(|f| matches!(f, Ok(f) if f.is_dir()));
-    //     let recursive: bool = call.has_flag("recursive");
-    //     if any_source_is_dir && !recursive {
-    //         return Err(ShellError::MoveNotPossibleSingle(
-    //             "Directories must be copied using \"--recursive\"".to_string(),
-    //             call.positional[0].span,
-    //         ));
-    //     }
+fn copy_symlink(src: PathBuf, dst: PathBuf, span: Span) -> Value {
+    let target_path = read_link(src.as_path());
+    let target_path = match target_path {
+        Ok(p) => p,
+        Err(err) => {
+            return Value::Error {
+                error: ShellError::GenericError(
+                    err.to_string(),
+                    err.to_string(),
+                    Some(span),
+                    None,
+                    vec![],
+                ),
+            }
+        }
+    };
 
-    //     if interactive && !force {
-    //         let mut remove: Vec<usize> = vec![];
-    //         for (index, file) in sources.iter().enumerate() {
-    //             let prompt = format!(
-    //                 "Are you shure that you want to copy {} to {}?",
-    //                 file.as_ref()
-    //                     .map_err(|err| ShellError::SpannedLabeledError(
-    //                         "Reference error".into(),
-    //                         err.to_string(),
-    //                         call.head
-    //                     ))?
-    //                     .file_name()
-    //                     .ok_or_else(|| ShellError::SpannedLabeledError(
-    //                         "File name error".into(),
-    //                         "Unable to get file name".into(),
-    //                         call.head
-    //                     ))?
-    //                     .to_str()
-    //                     .ok_or_else(|| ShellError::SpannedLabeledError(
-    //                         "Unable to get str error".into(),
-    //                         "Unable to convert to str file name".into(),
-    //                         call.head
-    //                     ))?,
-    //                 destination
-    //                     .file_name()
-    //                     .ok_or_else(|| ShellError::SpannedLabeledError(
-    //                         "File name error".into(),
-    //                         "Unable to get file name".into(),
-    //                         call.head
-    //                     ))?
-    //                     .to_str()
-    //                     .ok_or_else(|| ShellError::SpannedLabeledError(
-    //                         "Unable to get str error".into(),
-    //                         "Unable to convert to str file name".into(),
-    //                         call.head
-    //                     ))?,
-    //             );
+    let create_symlink = {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink
+        }
 
-    //             let input = get_interactive_confirmation(prompt)?;
+        #[cfg(windows)]
+        {
+            if !target_path.exists() || target_path.is_file() {
+                std::os::windows::fs::symlink_file
+            } else {
+                std::os::windows::fs::symlink_dir
+            }
+        }
+    };
 
-    //             if !input {
-    //                 remove.push(index);
-    //             }
-    //         }
-
-    //         remove.reverse();
-
-    //         for index in remove {
-    //             sources.remove(index);
-    //         }
-
-    //         if sources.is_empty() {
-    //             return Err(ShellError::NoFileToBeCopied());
-    //         }
-    //     }
-
-    //     for entry in sources.into_iter().flatten() {
-    //         let mut sources = FileStructure::new();
-    //         sources.walk_decorate(&entry, engine_state, stack)?;
-
-    //         if entry.is_file() {
-    //             let sources = sources.paths_applying_with(|(source_file, _depth_level)| {
-    //                 if destination.is_dir() {
-    //                     let mut dest = canonicalize_with(&destination, &path)?;
-    //                     if let Some(name) = entry.file_name() {
-    //                         dest.push(name);
-    //                     }
-    //                     Ok((source_file, dest))
-    //                 } else {
-    //                     Ok((source_file, destination.clone()))
-    //                 }
-    //             })?;
-
-    //             for (src, dst) in sources {
-    //                 if src.is_file() {
-    //                     std::fs::copy(&src, dst).map_err(|e| {
-    //                         ShellError::MoveNotPossibleSingle(
-    //                             format!(
-    //                                 "failed to move containing file \"{}\": {}",
-    //                                 src.to_string_lossy(),
-    //                                 e
-    //                             ),
-    //                             call.positional[0].span,
-    //                         )
-    //                     })?;
-    //                 }
-    //             }
-    //         } else if entry.is_dir() {
-    //             let destination = if !destination.exists() {
-    //                 destination.clone()
-    //             } else {
-    //                 match entry.file_name() {
-    //                     Some(name) => destination.join(name),
-    //                     None => {
-    //                         return Err(ShellError::FileNotFoundCustom(
-    //                             format!("containing \"{:?}\" is not a valid path", entry),
-    //                             call.positional[0].span,
-    //                         ))
-    //                     }
-    //                 }
-    //             };
-
-    //             std::fs::create_dir_all(&destination).map_err(|e| {
-    //                 ShellError::MoveNotPossibleSingle(
-    //                     format!("failed to recursively fill destination: {}", e),
-    //                     call.positional[1].span,
-    //                 )
-    //             })?;
-
-    //             let sources = sources.paths_applying_with(|(source_file, depth_level)| {
-    //                 let mut dest = destination.clone();
-    //                 let path = canonicalize_with(&source_file, &path)?;
-    //                 let components = path
-    //                     .components()
-    //                     .map(|fragment| fragment.as_os_str())
-    //                     .rev()
-    //                     .take(1 + depth_level);
-
-    //                 components.for_each(|fragment| dest.push(fragment));
-    //                 Ok((PathBuf::from(&source_file), dest))
-    //             })?;
-
-    //             for (src, dst) in sources {
-    //                 if src.is_dir() && !dst.exists() {
-    //                     std::fs::create_dir_all(&dst).map_err(|e| {
-    //                         ShellError::MoveNotPossibleSingle(
-    //                             format!(
-    //                                 "failed to create containing directory \"{}\": {}",
-    //                                 dst.to_string_lossy(),
-    //                                 e
-    //                             ),
-    //                             call.positional[1].span,
-    //                         )
-    //                     })?;
-    //                 }
-
-    //                 if src.is_file() {
-    //                     std::fs::copy(&src, &dst).map_err(|e| {
-    //                         ShellError::MoveNotPossibleSingle(
-    //                             format!(
-    //                                 "failed to move containing file \"{}\": {}",
-    //                                 src.to_string_lossy(),
-    //                                 e
-    //                             ),
-    //                             call.positional[0].span,
-    //                         )
-    //                     })?;
-    //                 }
-    //             }
-    //         }
-    //     }
-
-    //     Ok(PipelineData::new(call.head))
-    // }
+    match create_symlink(target_path.as_path(), dst.as_path()) {
+        Ok(_) => {
+            let msg = format!("copied {:} to {:}", src.display(), dst.display());
+            Value::String { val: msg, span }
+        }
+        Err(e) => Value::Error {
+            error: ShellError::GenericError(e.to_string(), e.to_string(), Some(span), None, vec![]),
+        },
+    }
 }

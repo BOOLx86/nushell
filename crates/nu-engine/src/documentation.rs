@@ -1,8 +1,9 @@
 use nu_protocol::{
     ast::Call,
     engine::{EngineState, Stack},
-    Example, IntoPipelineData, Signature, Span, Value,
+    Example, IntoPipelineData, Signature, Span, SyntaxShape, Value,
 };
+use std::fmt::Write;
 
 pub fn get_full_help(
     sig: &Signature,
@@ -62,13 +63,14 @@ fn get_documentation(
     }
 
     if !sig.search_terms.is_empty() {
-        long_desc.push_str(&format!(
+        let _ = write!(
+            long_desc,
             "Search terms: {}\n\n",
             sig.search_terms.join(", ")
-        ));
+        );
     }
 
-    long_desc.push_str(&format!("Usage:\n  > {}\n", sig.call_signature()));
+    let _ = write!(long_desc, "Usage:\n  > {}\n", sig.call_signature());
 
     if !subcommands.is_empty() {
         long_desc.push_str("\nSubcommands:\n");
@@ -87,20 +89,32 @@ fn get_documentation(
     {
         long_desc.push_str("\nParameters:\n");
         for positional in &sig.required_positional {
-            long_desc.push_str(&format!("  {}: {}\n", positional.name, positional.desc));
+            let _ = writeln!(
+                long_desc,
+                "  {} <{:?}>: {}",
+                positional.name,
+                document_shape(positional.shape.clone()),
+                positional.desc
+            );
         }
         for positional in &sig.optional_positional {
-            long_desc.push_str(&format!(
-                "  (optional) {}: {}\n",
-                positional.name, positional.desc
-            ));
+            let _ = writeln!(
+                long_desc,
+                "  (optional) {} <{:?}>: {}",
+                positional.name,
+                document_shape(positional.shape.clone()),
+                positional.desc
+            );
         }
 
         if let Some(rest_positional) = &sig.rest_positional {
-            long_desc.push_str(&format!(
-                "  ...{}: {}\n",
-                rest_positional.name, rest_positional.desc
-            ));
+            let _ = writeln!(
+                long_desc,
+                "  ...{} <{:?}>: {}",
+                rest_positional.name,
+                document_shape(rest_positional.shape.clone()),
+                rest_positional.desc
+            );
         }
     }
 
@@ -114,8 +128,8 @@ fn get_documentation(
         long_desc.push_str(example.description);
 
         if config.no_color {
-            long_desc.push_str(&format!("\n  > {}\n", example.example));
-        } else if let Some(highlighter) = engine_state.find_decl(b"nu-highlight") {
+            let _ = write!(long_desc, "\n  > {}\n", example.example);
+        } else if let Some(highlighter) = engine_state.find_decl(b"nu-highlight", &[]) {
             let decl = engine_state.get_decl(highlighter);
 
             match decl.run(
@@ -132,25 +146,33 @@ fn get_documentation(
                     let result = output.into_value(Span { start: 0, end: 0 });
                     match result.as_string() {
                         Ok(s) => {
-                            long_desc.push_str(&format!("\n  > {}\n", s));
+                            let _ = write!(long_desc, "\n  > {}\n", s);
                         }
                         _ => {
-                            long_desc.push_str(&format!("\n  > {}\n", example.example));
+                            let _ = write!(long_desc, "\n  > {}\n", example.example);
                         }
                     }
                 }
                 Err(_) => {
-                    long_desc.push_str(&format!("\n  > {}\n", example.example));
+                    let _ = write!(long_desc, "\n  > {}\n", example.example);
                 }
             }
         } else {
-            long_desc.push_str(&format!("\n  > {}\n", example.example));
+            let _ = write!(long_desc, "\n  > {}\n", example.example);
         }
     }
 
     long_desc.push('\n');
 
     long_desc
+}
+
+// document shape helps showing more useful information
+pub fn document_shape(shape: SyntaxShape) -> SyntaxShape {
+    match shape {
+        SyntaxShape::Custom(inner_shape, _) => *inner_shape,
+        _ => shape,
+    }
 }
 
 pub fn get_flags_section(signature: &Signature) -> String {

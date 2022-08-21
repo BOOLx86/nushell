@@ -50,6 +50,20 @@ impl Command for Open {
         let ctrlc = engine_state.ctrlc.clone();
         let path = call.opt::<Spanned<String>>(engine_state, stack, 0)?;
 
+        let path = {
+            if let Some(path_val) = path {
+                Some(Spanned {
+                    item: match strip_ansi_escapes::strip(&path_val.item) {
+                        Ok(item) => String::from_utf8(item).unwrap_or(path_val.item),
+                        Err(_) => path_val.item,
+                    },
+                    span: path_val.span,
+                })
+            } else {
+                path
+            }
+        };
+
         let path = if let Some(path) = path {
             path
         } else {
@@ -88,14 +102,14 @@ impl Command for Open {
 
         if permission_denied(&path) {
             #[cfg(unix)]
-            let error_msg = format!(
-                "The permissions of {:o} do not allow access for this user",
-                path.metadata()
-                    .expect("this shouldn't be called since we already know there is a dir")
-                    .permissions()
-                    .mode()
-                    & 0o0777
-            );
+            let error_msg = match path.metadata() {
+                Ok(md) => format!(
+                    "The permissions of {:o} does not allow access for this user",
+                    md.permissions().mode() & 0o0777
+                ),
+                Err(e) => e.to_string(),
+            };
+
             #[cfg(not(unix))]
             let error_msg = String::from("Permission denied");
             Err(ShellError::GenericError(
@@ -151,7 +165,7 @@ impl Command for Open {
             };
 
             if let Some(ext) = ext {
-                match engine_state.find_decl(format!("from {}", ext).as_bytes()) {
+                match engine_state.find_decl(format!("from {}", ext).as_bytes(), &[]) {
                     Some(converter_id) => {
                         let decl = engine_state.get_decl(converter_id);
                         if let Some(block_id) = decl.get_block_id() {

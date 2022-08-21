@@ -28,6 +28,10 @@ impl Command for SubCommand {
         "Convert value to duration"
     }
 
+    fn extra_usage(&self) -> &str {
+        "into duration does not take leap years into account and every month is calculated with 30 days"
+    }
+
     fn search_terms(&self) -> Vec<&str> {
         vec!["convert", "time", "period"]
     }
@@ -136,7 +140,7 @@ fn into_duration(
     )
 }
 
-fn string_to_duration(s: &str, span: Span) -> Result<i64, ShellError> {
+fn string_to_duration(s: &str, span: Span, value_span: Span) -> Result<i64, ShellError> {
     if let Some(expression) = parse_duration_bytes(s.as_bytes(), span) {
         if let Expr::ValueWithUnit(value, unit) = expression.expr {
             if let Expr::Int(x) = value.expr {
@@ -149,16 +153,21 @@ fn string_to_duration(s: &str, span: Span) -> Result<i64, ShellError> {
                     Unit::Hour => return Ok(x * 60 * 60 * 1000 * 1000 * 1000),
                     Unit::Day => return Ok(x * 24 * 60 * 60 * 1000 * 1000 * 1000),
                     Unit::Week => return Ok(x * 7 * 24 * 60 * 60 * 1000 * 1000 * 1000),
+                    Unit::Month => return Ok(x * 30 * 24 * 60 * 60 * 1000 * 1000 * 1000), //30 days to a month
+                    Unit::Year => return Ok(x * 365 * 24 * 60 * 60 * 1000 * 1000 * 1000), //365 days to a year
+                    Unit::Decade => return Ok(x * 10 * 365 * 24 * 60 * 60 * 1000 * 1000 * 1000), //365 days to a year
                     _ => {}
                 }
             }
         }
     }
 
-    Err(ShellError::CantConvert(
+    Err(ShellError::CantConvertWithValue(
         "duration".to_string(),
         "string".to_string(),
+        s.to_string(),
         span,
+        value_span,
         Some("supported units are ns, us, ms, sec, min, hr, day, and wk".to_string()),
     ))
 }
@@ -166,7 +175,10 @@ fn string_to_duration(s: &str, span: Span) -> Result<i64, ShellError> {
 fn action(input: &Value, span: Span) -> Value {
     match input {
         Value::Duration { .. } => input.clone(),
-        Value::String { val, .. } => match string_to_duration(val, span) {
+        Value::String {
+            val,
+            span: value_span,
+        } => match string_to_duration(val, span, *value_span) {
             Ok(val) => Value::Duration { val, span },
             Err(error) => Value::Error { error },
         },

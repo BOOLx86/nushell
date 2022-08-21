@@ -1,4 +1,4 @@
-use nu_test_support::fs::{AbsolutePath, DisplayPath, Stub::FileWithContent};
+use nu_test_support::fs::{AbsolutePath, Stub::FileWithContent};
 use nu_test_support::nu;
 use nu_test_support::pipeline;
 use nu_test_support::playground::Playground;
@@ -18,7 +18,7 @@ fn sources_also_files_under_custom_lib_dirs_path() {
                 lib_dirs = ["{}"]
                 skip_welcome_message = true
             "#,
-                library_path.display_path()
+                library_path
             ),
         )]);
 
@@ -59,7 +59,7 @@ fn try_source_foo_with_double_quotes_in(testdir: &str, playdir: &str) {
         sandbox.mkdir(&testdir);
         sandbox.with_files(vec![FileWithContent(&foo_file, "echo foo")]);
 
-        let cmd = String::from("source ") + r#"""# + &foo_file + r#"""#;
+        let cmd = String::from("source ") + r#"""# + foo_file.as_str() + r#"""#;
 
         let actual = nu!(cwd: dirs.test(), &cmd);
 
@@ -76,7 +76,7 @@ fn try_source_foo_with_single_quotes_in(testdir: &str, playdir: &str) {
         sandbox.mkdir(&testdir);
         sandbox.with_files(vec![FileWithContent(&foo_file, "echo foo")]);
 
-        let cmd = String::from("source ") + r#"'"# + &foo_file + r#"'"#;
+        let cmd = String::from("source ") + r#"'"# + foo_file.as_str() + r#"'"#;
 
         let actual = nu!(cwd: dirs.test(), &cmd);
 
@@ -93,7 +93,7 @@ fn try_source_foo_without_quotes_in(testdir: &str, playdir: &str) {
         sandbox.mkdir(&testdir);
         sandbox.with_files(vec![FileWithContent(&foo_file, "echo foo")]);
 
-        let cmd = String::from("source ") + &foo_file;
+        let cmd = String::from("source ") + foo_file.as_str();
 
         let actual = nu!(cwd: dirs.test(), &cmd);
 
@@ -123,8 +123,6 @@ fn sources_unicode_file_in_unicode_dir_without_spaces_2() {
     try_source_foo_without_quotes_in(":fire_engine:", "source_test_9");
 }
 
-// FIXME: jt: needs more work
-#[ignore]
 #[test]
 fn sources_unicode_file_in_unicode_dir_with_spaces_1() {
     // this one fails
@@ -133,8 +131,6 @@ fn sources_unicode_file_in_unicode_dir_with_spaces_1() {
     try_source_foo_with_double_quotes_in("e-$ èрт🚒♞中片-j", "source_test_9");
 }
 
-// FIXME: jt: needs more work
-#[ignore]
 #[cfg(not(windows))] // ':' is not allowed in Windows paths
 #[test]
 fn sources_unicode_file_in_unicode_dir_with_spaces_2() {

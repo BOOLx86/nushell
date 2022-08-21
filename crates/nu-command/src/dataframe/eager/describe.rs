@@ -4,7 +4,7 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
 };
 use polars::{
     chunked_array::ChunkedArray,
@@ -19,7 +19,7 @@ pub struct DescribeDF;
 
 impl Command for DescribeDF {
     fn name(&self) -> &str {
-        "dfr describe"
+        "describe"
     }
 
     fn usage(&self) -> &str {
@@ -29,6 +29,8 @@ impl Command for DescribeDF {
     fn signature(&self) -> Signature {
         Signature::build(self.name())
             .category(Category::Custom("dataframe".into()))
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
             .named(
                 "quantiles",
                 SyntaxShape::Table,
@@ -40,7 +42,7 @@ impl Command for DescribeDF {
     fn examples(&self) -> Vec<Example> {
         vec![Example {
             description: "dataframe description",
-            example: "[[a b]; [1 1] [1 1]] | dfr to-df | dfr describe",
+            example: "[[a b]; [1 1] [1 1]] | into df | describe",
             result: Some(
                 NuDataFrame::try_from_columns(vec![
                     Column::new(

@@ -49,6 +49,7 @@
 //!     case_sensitive: false,
 //!     require_literal_separator: false,
 //!     require_literal_leading_dot: false,
+//!     recursive_match_hidden_dir: true,
 //! };
 //! for entry in glob_with("local/*a*", options).unwrap() {
 //!     if let Ok(path) = entry {
@@ -376,7 +377,16 @@ impl Iterator for Paths {
                 }
 
                 if is_dir(&path) {
-                    // the path is a directory, so it's a match
+                    // the path is a directory, check if matched according
+                    // to `hidden_dir_recursive` option.
+                    if !self.options.recursive_match_hidden_dir
+                        && path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().starts_with('.'))
+                            .unwrap_or(false)
+                    {
+                        continue;
+                    }
 
                     // push this directory's contents
                     fill_todo(
@@ -412,7 +422,10 @@ impl Iterator for Paths {
                         // FIXME (#9639): How do we handle non-utf8 filenames?
                         // Ignore them for now; ideally we'd still match them
                         // against a *
-                        None => continue,
+                        None => {
+                            println!("warning: get non-utf8 filename {path:?}, ignored.");
+                            continue;
+                        }
                         Some(x) => x,
                     }
                 },
@@ -508,7 +521,7 @@ enum PatternToken {
 }
 
 #[allow(clippy::enum_variant_names)]
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 enum MatchResult {
     Match,
     SubPatternDoesntMatch,
@@ -782,7 +795,11 @@ fn fill_todo(
             } else {
                 path.join(&s)
             };
-            if (special && is_dir) || (!special && fs::metadata(&next_path).is_ok()) {
+            if (special && is_dir)
+                || (!special
+                    && (fs::metadata(&next_path).is_ok()
+                        || fs::symlink_metadata(&next_path).is_ok()))
+            {
                 add(todo, next_path);
             }
         }
@@ -868,6 +885,10 @@ pub struct MatchOptions {
     /// conventionally considered hidden on Unix systems and it might be
     /// desirable to skip them when listing files.
     pub require_literal_leading_dot: bool,
+
+    /// if given pattern contains `**`, this flag check if `**` matches hidden directory.
+    /// For example: if true, `**` will match `.abcdef/ghi`.
+    pub recursive_match_hidden_dir: bool,
 }
 
 impl MatchOptions {
@@ -882,6 +903,7 @@ impl MatchOptions {
     ///     case_sensitive: true,
     ///     require_literal_separator: false,
     ///     require_literal_leading_dot: false
+    ///     recursive_match_hidden_dir: true,
     /// }
     /// ```
     pub fn new() -> Self {
@@ -889,6 +911,7 @@ impl MatchOptions {
             case_sensitive: true,
             require_literal_separator: false,
             require_literal_leading_dot: false,
+            recursive_match_hidden_dir: true,
         }
     }
 }
@@ -932,16 +955,19 @@ mod test {
         use std::io;
         let mut iter = glob("/root/*").unwrap();
 
-        // GlobErrors shouldn't halt iteration
-        let next = iter.next();
-        assert!(next.is_some());
+        // Skip test if running with permissions to read /root
+        if std::fs::read_dir("/root/").is_err() {
+            // GlobErrors shouldn't halt iteration
+            let next = iter.next();
+            assert!(next.is_some());
 
-        let err = next.unwrap();
-        assert!(err.is_err());
+            let err = next.unwrap();
+            assert!(err.is_err());
 
-        let err = err.err().unwrap();
-        assert!(err.path() == Path::new("/root"));
-        assert!(err.error().kind() == io::ErrorKind::PermissionDenied);
+            let err = err.err().unwrap();
+            assert!(err.path() == Path::new("/root"));
+            assert!(err.error().kind() == io::ErrorKind::PermissionDenied);
+        }
     }
 
     #[test]
@@ -966,7 +992,7 @@ mod test {
                 .and_then(|p| match p.components().next().unwrap() {
                     Component::Prefix(prefix_component) => {
                         let path = Path::new(prefix_component.as_os_str()).join("*");
-                        Some(path.to_path_buf())
+                        Some(path)
                     }
                     _ => panic!("no prefix in this path"),
                 })
@@ -1077,6 +1103,7 @@ mod test {
             case_sensitive: false,
             require_literal_separator: false,
             require_literal_leading_dot: false,
+            recursive_match_hidden_dir: true,
         };
 
         assert!(pat.matches_with("aBcDeFg", options));
@@ -1091,11 +1118,13 @@ mod test {
             case_sensitive: true,
             require_literal_separator: true,
             require_literal_leading_dot: false,
+            recursive_match_hidden_dir: true,
         };
         let options_not_require_literal = MatchOptions {
             case_sensitive: true,
             require_literal_separator: false,
             require_literal_leading_dot: false,
+            recursive_match_hidden_dir: true,
         };
 
         assert!(Pattern::new("abc/def")
@@ -1125,11 +1154,13 @@ mod test {
             case_sensitive: true,
             require_literal_separator: false,
             require_literal_leading_dot: true,
+            recursive_match_hidden_dir: true,
         };
         let options_not_require_literal_leading_dot = MatchOptions {
             case_sensitive: true,
             require_literal_separator: false,
             require_literal_leading_dot: false,
+            recursive_match_hidden_dir: true,
         };
 
         let f = |options| {

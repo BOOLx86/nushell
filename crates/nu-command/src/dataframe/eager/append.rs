@@ -2,7 +2,7 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
 };
 
 use super::super::values::{Axis, Column, NuDataFrame};
@@ -12,7 +12,7 @@ pub struct AppendDF;
 
 impl Command for AppendDF {
     fn name(&self) -> &str {
-        "dfr append"
+        "append"
     }
 
     fn usage(&self) -> &str {
@@ -23,6 +23,8 @@ impl Command for AppendDF {
         Signature::build(self.name())
             .required("other", SyntaxShape::Any, "dataframe to be appended")
             .switch("col", "appends in col orientation", Some('c'))
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
             .category(Category::Custom("dataframe".into()))
     }
 
@@ -30,8 +32,8 @@ impl Command for AppendDF {
         vec![
             Example {
                 description: "Appends a dataframe as new columns",
-                example: r#"let a = ([[a b]; [1 2] [3 4]] | dfr to-df);
-    $a | dfr append $a"#,
+                example: r#"let a = ([[a b]; [1 2] [3 4]] | into df);
+    $a | append $a"#,
                 result: Some(
                     NuDataFrame::try_from_columns(vec![
                         Column::new(
@@ -57,8 +59,8 @@ impl Command for AppendDF {
             },
             Example {
                 description: "Appends a dataframe merging at the end of columns",
-                example: r#"let a = ([[a b]; [1 2] [3 4]] | dfr to-df);
-    $a | dfr append $a --col"#,
+                example: r#"let a = ([[a b]; [1 2] [3 4]] | into df);
+    $a | append $a --col"#,
                 result: Some(
                     NuDataFrame::try_from_columns(vec![
                         Column::new(

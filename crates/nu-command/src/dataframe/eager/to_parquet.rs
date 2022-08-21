@@ -4,7 +4,7 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Spanned, SyntaxShape, Value,
+    Category, Example, PipelineData, ShellError, Signature, Spanned, SyntaxShape, Type, Value,
 };
 use polars::prelude::ParquetWriter;
 
@@ -15,7 +15,7 @@ pub struct ToParquet;
 
 impl Command for ToParquet {
     fn name(&self) -> &str {
-        "dfr to-parquet"
+        "to parquet"
     }
 
     fn usage(&self) -> &str {
@@ -25,13 +25,15 @@ impl Command for ToParquet {
     fn signature(&self) -> Signature {
         Signature::build(self.name())
             .required("file", SyntaxShape::Filepath, "file path to save dataframe")
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Any)
             .category(Category::Custom("dataframe".into()))
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
-            description: "Saves dataframe to csv file",
-            example: "[[a b]; [1 2] [3 4]] | dfr to-df | dfr to-parquet test.parquet",
+            description: "Saves dataframe to parquet file",
+            example: "[[a b]; [1 2] [3 4]] | into df | to parquet test.parquet",
             result: None,
         }]
     }

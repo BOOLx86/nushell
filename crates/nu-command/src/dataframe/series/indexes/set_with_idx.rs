@@ -4,7 +4,7 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
 };
 use polars::prelude::{ChunkSet, DataType, IntoSeries};
 
@@ -13,7 +13,7 @@ pub struct SetWithIndex;
 
 impl Command for SetWithIndex {
     fn name(&self) -> &str {
-        "dfr set-with-idx"
+        "set-with-idx"
     }
 
     fn usage(&self) -> &str {
@@ -29,15 +29,17 @@ impl Command for SetWithIndex {
                 "list of indices indicating where to set the value",
                 Some('i'),
             )
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
             .category(Category::Custom("dataframe".into()))
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
             description: "Set value in selected rows from series",
-            example: r#"let series = ([4 1 5 2 4 3] | dfr to-df);
-    let indices = ([0 2] | dfr to-df);
-    $series | dfr set-with-idx 6 -i $indices"#,
+            example: r#"let series = ([4 1 5 2 4 3] | into df);
+    let indices = ([0 2] | into df);
+    $series | set-with-idx 6 -i $indices"#,
             result: Some(
                 NuDataFrame::try_from_columns(vec![Column::new(
                     "0".to_string(),
@@ -144,7 +146,7 @@ fn command(
             NuDataFrame::try_from_series(vec![res.into_series()], call.head)
         }
         Value::Float { val, span } => {
-            let chunked = series.as_ref().f64().map_err(|e| {
+            let chunked = series.f64().map_err(|e| {
                 ShellError::GenericError(
                     "Error casting to f64".into(),
                     e.to_string(),
@@ -167,7 +169,7 @@ fn command(
             NuDataFrame::try_from_series(vec![res.into_series()], call.head)
         }
         Value::String { val, span } => {
-            let chunked = series.as_ref().utf8().map_err(|e| {
+            let chunked = series.utf8().map_err(|e| {
                 ShellError::GenericError(
                     "Error casting to string".into(),
                     e.to_string(),

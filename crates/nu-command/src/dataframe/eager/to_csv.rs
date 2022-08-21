@@ -4,7 +4,7 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Spanned, SyntaxShape, Value,
+    Category, Example, PipelineData, ShellError, Signature, Spanned, SyntaxShape, Type, Value,
 };
 use polars::prelude::{CsvWriter, SerWriter};
 
@@ -15,7 +15,7 @@ pub struct ToCSV;
 
 impl Command for ToCSV {
     fn name(&self) -> &str {
-        "dfr to-csv"
+        "to csv"
     }
 
     fn usage(&self) -> &str {
@@ -32,6 +32,8 @@ impl Command for ToCSV {
                 Some('d'),
             )
             .switch("no-header", "Indicates if file doesn't have header", None)
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Any)
             .category(Category::Custom("dataframe".into()))
     }
 
@@ -39,12 +41,12 @@ impl Command for ToCSV {
         vec![
             Example {
                 description: "Saves dataframe to csv file",
-                example: "[[a b]; [1 2] [3 4]] | dfr to-df | dfr to-csv test.csv",
+                example: "[[a b]; [1 2] [3 4]] | into df | to csv test.csv",
                 result: None,
             },
             Example {
                 description: "Saves dataframe to csv file using other delimiter",
-                example: "[[a b]; [1 2] [3 4]] | dfr to-df | dfr to-csv test.csv -d '|'",
+                example: "[[a b]; [1 2] [3 4]] | into df | to csv test.csv -d '|'",
                 result: None,
             },
         ]
@@ -91,7 +93,7 @@ fn command(
         writer.has_header(true)
     };
 
-    let writer = match delimiter {
+    let mut writer = match delimiter {
         None => writer,
         Some(d) => {
             if d.item.len() != 1 {

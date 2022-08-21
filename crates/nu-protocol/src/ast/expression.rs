@@ -30,11 +30,16 @@ impl Expression {
 
                 match operator {
                     Operator::Pow => 100,
-                    Operator::Multiply | Operator::Divide | Operator::Modulo => 95,
+                    Operator::Multiply
+                    | Operator::Divide
+                    | Operator::Modulo
+                    | Operator::FloorDivision => 95,
                     Operator::Plus | Operator::Minus => 90,
+                    Operator::ShiftLeft | Operator::ShiftRight => 85,
                     Operator::NotRegexMatch
                     | Operator::RegexMatch
                     | Operator::StartsWith
+                    | Operator::EndsWith
                     | Operator::LessThan
                     | Operator::LessThanOrEqual
                     | Operator::GreaterThan
@@ -43,6 +48,9 @@ impl Expression {
                     | Operator::NotEqual
                     | Operator::In
                     | Operator::NotIn => 80,
+                    Operator::BitAnd => 75,
+                    Operator::BitXor => 70,
+                    Operator::BitOr => 60,
                     Operator::And => 50,
                     Operator::Or => 40,
                 }

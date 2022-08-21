@@ -2,7 +2,7 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
 };
 
 use crate::dataframe::values::utils::convert_columns_string;
@@ -14,7 +14,7 @@ pub struct GetDF;
 
 impl Command for GetDF {
     fn name(&self) -> &str {
-        "dfr get"
+        "get"
     }
 
     fn usage(&self) -> &str {
@@ -24,13 +24,15 @@ impl Command for GetDF {
     fn signature(&self) -> Signature {
         Signature::build(self.name())
             .rest("rest", SyntaxShape::Any, "column names to sort dataframe")
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
             .category(Category::Custom("dataframe".into()))
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
-            description: "Creates dataframe with selected columns",
-            example: "[[a b]; [1 2] [3 4]] | dfr to-df | dfr get a",
+            description: "Returns the selected column",
+            example: "[[a b]; [1 2] [3 4]] | into df | get a",
             result: Some(
                 NuDataFrame::try_from_columns(vec![Column::new(
                     "a".to_string(),

@@ -1,17 +1,17 @@
+use super::super::values::{Column, NuDataFrame};
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, Type, Value,
 };
-
-use super::super::values::{Column, NuDataFrame};
+use polars::prelude::DataFrameOps;
 
 #[derive(Clone)]
 pub struct Dummies;
 
 impl Command for Dummies {
     fn name(&self) -> &str {
-        "dfr to-dummies"
+        "dummies"
     }
 
     fn usage(&self) -> &str {
@@ -19,14 +19,17 @@ impl Command for Dummies {
     }
 
     fn signature(&self) -> Signature {
-        Signature::build(self.name()).category(Category::Custom("dataframe".into()))
+        Signature::build(self.name())
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
+            .category(Category::Custom("dataframe".into()))
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![
             Example {
                 description: "Create new dataframe with dummy variables from a dataframe",
-                example: "[[a b]; [1 2] [3 4]] | dfr to-df | dfr to-dummies",
+                example: "[[a b]; [1 2] [3 4]] | into df | dummies",
                 result: Some(
                     NuDataFrame::try_from_columns(vec![
                         Column::new(
@@ -52,7 +55,7 @@ impl Command for Dummies {
             },
             Example {
                 description: "Create new dataframe with dummy variables from a series",
-                example: "[1 2 2 3 3] | dfr to-df | dfr to-dummies",
+                example: "[1 2 2 3 3] | into df | dummies",
                 result: Some(
                     NuDataFrame::try_from_columns(vec![
                         Column::new(

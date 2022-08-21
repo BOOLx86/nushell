@@ -1,9 +1,8 @@
 use super::super::values::{Column, NuDataFrame};
-
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, Type, Value,
 };
 
 #[derive(Clone)]
@@ -11,7 +10,7 @@ pub struct NUnique;
 
 impl Command for NUnique {
     fn name(&self) -> &str {
-        "dfr count-unique"
+        "n-unique"
     }
 
     fn usage(&self) -> &str {
@@ -19,13 +18,16 @@ impl Command for NUnique {
     }
 
     fn signature(&self) -> Signature {
-        Signature::build(self.name()).category(Category::Custom("dataframe".into()))
+        Signature::build(self.name())
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
+            .category(Category::Custom("dataframe".into()))
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
             description: "Counts unique values",
-            example: "[1 1 2 2 3 3 4] | dfr to-df | dfr count-unique",
+            example: "[1 1 2 2 3 3 4] | into df | n-unique",
             result: Some(
                 NuDataFrame::try_from_columns(vec![Column::new(
                     "count_unique".to_string(),
@@ -44,7 +46,8 @@ impl Command for NUnique {
         call: &Call,
         input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
-        command(engine_state, stack, call, input)
+        let df = NuDataFrame::try_from_pipeline(input, call.head)?;
+        command(engine_state, stack, call, df)
     }
 }
 
@@ -52,10 +55,8 @@ fn command(
     _engine_state: &EngineState,
     _stack: &mut Stack,
     call: &Call,
-    input: PipelineData,
+    df: NuDataFrame,
 ) -> Result<PipelineData, ShellError> {
-    let df = NuDataFrame::try_from_pipeline(input, call.head)?;
-
     let res = df.as_series(call.head)?.n_unique().map_err(|e| {
         ShellError::GenericError(
             "Error counting unique values".into(),

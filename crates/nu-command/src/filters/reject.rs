@@ -94,7 +94,7 @@ fn reject(
                 let mut vals = vec![];
 
                 for path in &keep_columns {
-                    let fetcher = input_val.clone().follow_cell_path(&path.members);
+                    let fetcher = input_val.clone().follow_cell_path(&path.members, false);
 
                     if let Ok(value) = fetcher {
                         cols.push(path.into_string());
@@ -125,7 +125,7 @@ fn reject(
         PipelineData::ListStream(stream, ..) => {
             let mut output = vec![];
 
-            let v: Vec<_> = stream.into_iter().collect();
+            let v: Vec<_> = stream.into_iter().map(|(v, _)| v).collect();
             let input_cols = get_input_cols(v.clone());
             let kc = get_keep_columns(input_cols, columns);
             keep_columns = get_cellpath_columns(kc, span);
@@ -135,7 +135,7 @@ fn reject(
                 let mut vals = vec![];
 
                 for path in &keep_columns {
-                    let fetcher = input_val.clone().follow_cell_path(&path.members)?;
+                    let fetcher = input_val.clone().follow_cell_path(&path.members, false)?;
                     cols.push(path.into_string());
                     vals.push(fetcher);
                 }
@@ -151,7 +151,7 @@ fn reject(
             let mut vals = vec![];
 
             for cell_path in &keep_columns {
-                let result = v.clone().follow_cell_path(&cell_path.members)?;
+                let result = v.clone().follow_cell_path(&cell_path.members, false)?;
 
                 cols.push(cell_path.into_string());
                 vals.push(result);
@@ -203,5 +203,15 @@ fn reject_record_columns(cols: &mut Vec<String>, vals: &mut Vec<Value>, rejects:
             cols.remove(index);
             vals.remove(index);
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn test_examples() {
+        use super::Reject;
+        use crate::test_examples;
+        test_examples(Reject {})
     }
 }

@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use nu_engine::CallExt;
 use nu_protocol::ast::Call;
 use nu_protocol::engine::{Command, EngineState, Stack};
@@ -47,15 +48,56 @@ impl Command for ViewSource {
                 }
             }
             Value::String { val, .. } => {
-                if let Some(decl_id) = engine_state.find_decl(val.as_bytes()) {
+                if let Some(decl_id) = engine_state.find_decl(val.as_bytes(), &[]) {
                     // arg is a command
                     let decl = engine_state.get_decl(decl_id);
+                    let sig = decl.signature();
+                    let vec_of_required = &sig.required_positional;
+                    let vec_of_optional = &sig.optional_positional;
+                    let vec_of_flags = &sig.named;
+                    // gets vector of positionals.
                     if let Some(block_id) = decl.get_block_id() {
                         let block = engine_state.get_block(block_id);
                         if let Some(block_span) = block.span {
                             let contents = engine_state.get_span_contents(&block_span);
-                            Ok(Value::string(String::from_utf8_lossy(contents), call.head)
-                                .into_pipeline_data())
+                            let mut final_contents = String::from("def ");
+                            final_contents.push_str(&val);
+                            // The name of the function...
+                            final_contents.push_str(" [ ");
+                            for n in vec_of_required {
+                                final_contents.push_str(&n.name);
+                                // name of positional arg
+                                final_contents.push(':');
+                                final_contents.push_str(&n.shape.to_string());
+                                final_contents.push(' ');
+                            }
+                            for n in vec_of_optional {
+                                final_contents.push_str(&n.name);
+                                // name of positional arg
+                                final_contents.push_str("?:");
+                                final_contents.push_str(&n.shape.to_string());
+                                final_contents.push(' ');
+                            }
+                            for n in vec_of_flags {
+                                final_contents.push_str("--");
+                                final_contents.push_str(&n.long);
+                                final_contents.push(' ');
+                                if n.short.is_some() {
+                                    final_contents.push_str("(-");
+                                    final_contents.push(n.short.expect("this cannot trigger."));
+                                    final_contents.push(')');
+                                }
+                                if n.arg.is_some() {
+                                    final_contents.push_str(": ");
+                                    final_contents.push_str(
+                                        &n.arg.as_ref().expect("this cannot trigger.").to_string(),
+                                    );
+                                }
+                                final_contents.push(' ');
+                            }
+                            final_contents.push_str("] ");
+                            final_contents.push_str(&String::from_utf8_lossy(contents));
+                            Ok(Value::string(final_contents, call.head).into_pipeline_data())
                         } else {
                             Err(ShellError::GenericError(
                                 "Cannot view value".to_string(),
@@ -74,11 +116,11 @@ impl Command for ViewSource {
                             Vec::new(),
                         ))
                     }
-                } else if let Some(overlay_id) = engine_state.find_overlay(val.as_bytes()) {
+                } else if let Some(module_id) = engine_state.find_module(val.as_bytes(), &[]) {
                     // arg is a module
-                    let overlay = engine_state.get_overlay(overlay_id);
-                    if let Some(overlay_span) = overlay.span {
-                        let contents = engine_state.get_span_contents(&overlay_span);
+                    let module = engine_state.get_module(module_id);
+                    if let Some(module_span) = module.span {
+                        let contents = engine_state.get_span_contents(&module_span);
                         Ok(Value::string(String::from_utf8_lossy(contents), call.head)
                             .into_pipeline_data())
                     } else {
@@ -90,6 +132,15 @@ impl Command for ViewSource {
                             Vec::new(),
                         ))
                     }
+                } else if let Some(alias_id) = engine_state.find_alias(val.as_bytes(), &[]) {
+                    let contents = &mut engine_state.get_alias(alias_id).iter().map(|span| {
+                        String::from_utf8_lossy(engine_state.get_span_contents(span)).to_string()
+                    });
+                    Ok(Value::String {
+                        val: contents.join(" "),
+                        span: call.head,
+                    }
+                    .into_pipeline_data())
                 } else {
                     Err(ShellError::GenericError(
                         "Cannot view value".to_string(),
@@ -141,6 +192,14 @@ impl Command for ViewSource {
                 example: r#"module mod-foo { export env FOO_ENV { 'BAZ' } }; view-source mod-foo"#,
                 result: Some(Value::String {
                     val: " export env FOO_ENV { 'BAZ' }".to_string(),
+                    span: Span::test_data(),
+                }),
+            },
+            Example {
+                description: "View the source of an alias",
+                example: r#"alias hello = echo hi; view-source hello"#,
+                result: Some(Value::String {
+                    val: "echo hi".to_string(),
                     span: Span::test_data(),
                 }),
             },

@@ -27,8 +27,8 @@ impl Command for Source {
     }
 
     fn extra_usage(&self) -> &str {
-        r#"This command is a parser keyword. For details, check
-https://www.nushell.sh/book/thinking_in_nushell.html#parsing-and-evaluation-are-different-stages"#
+        r#"This command is a parser keyword. For details, check:
+  https://www.nushell.sh/book/thinking_in_nu.html"#
     }
 
     fn is_parser_keyword(&self) -> bool {
@@ -67,11 +67,6 @@ https://www.nushell.sh/book/thinking_in_nushell.html#parsing-and-evaluation-are-
             Example {
                 description: "Runs foo.nu in current context and call the command defined, suppose foo.nu has content: `def say-hi [] { echo 'Hi!' }`",
                 example: r#"source ./foo.nu; say-hi"#,
-                result: None,
-            },
-            Example {
-                description: "Runs foo.nu in current context and call the `main` command automatically, suppose foo.nu has content: `def main [] { echo 'Hi!' }`",
-                example: r#"source ./foo.nu"#,
                 result: None,
             },
         ]

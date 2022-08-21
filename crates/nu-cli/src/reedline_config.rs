@@ -24,7 +24,7 @@ const DEFAULT_COMPLETION_MENU: &str = r#"
   type: {
       layout: columnar
       columns: 4
-      col_width: 20   
+      col_width: 20
       col_padding: 2
   }
   style: {
@@ -58,7 +58,7 @@ const DEFAULT_HELP_MENU: &str = r#"
   type: {
       layout: description
       columns: 4
-      col_width: 20   
+      col_width: 20
       col_padding: 2
       selection_rows: 4
       description_rows: 10
@@ -501,14 +501,16 @@ fn add_menu_keybindings(keybindings: &mut Keybindings) {
         ReedlineEvent::MenuPrevious,
     );
 
-    // History menu keybinding
+    keybindings.add_binding(
+        KeyModifiers::CONTROL,
+        KeyCode::Char('r'),
+        ReedlineEvent::Menu("history_menu".to_string()),
+    );
+
     keybindings.add_binding(
         KeyModifiers::CONTROL,
         KeyCode::Char('x'),
-        ReedlineEvent::UntilFound(vec![
-            ReedlineEvent::Menu("history_menu".to_string()),
-            ReedlineEvent::MenuPageNext,
-        ]),
+        ReedlineEvent::MenuPageNext,
     );
 
     keybindings.add_binding(
@@ -522,8 +524,8 @@ fn add_menu_keybindings(keybindings: &mut Keybindings) {
 
     // Help menu keybinding
     keybindings.add_binding(
-        KeyModifiers::CONTROL,
-        KeyCode::Char('q'),
+        KeyModifiers::NONE,
+        KeyCode::F(1),
         ReedlineEvent::Menu("help_menu".to_string()),
     );
 }
@@ -812,7 +814,6 @@ fn event_from_record(
 ) -> Result<ReedlineEvent, ShellError> {
     let event = match name {
         "none" => ReedlineEvent::None,
-        "actionhandler" => ReedlineEvent::ActionHandler,
         "clearscreen" => ReedlineEvent::ClearScreen,
         "clearscrollback" => ReedlineEvent::ClearScrollback,
         "historyhintcomplete" => ReedlineEvent::HistoryHintComplete,
@@ -837,6 +838,7 @@ fn event_from_record(
         "menuprevious" => ReedlineEvent::MenuPrevious,
         "menupagenext" => ReedlineEvent::MenuPageNext,
         "menupageprevious" => ReedlineEvent::MenuPagePrevious,
+        "openeditor" => ReedlineEvent::OpenEditor,
         "menu" => {
             let menu = extract_value("name", cols, vals, span)?;
             ReedlineEvent::Menu(menu.into_string("", config))
@@ -872,7 +874,16 @@ fn edit_from_record(
         "moveleft" => EditCommand::MoveLeft,
         "moveright" => EditCommand::MoveRight,
         "movewordleft" => EditCommand::MoveWordLeft,
+        "movebigwordleft" => EditCommand::MoveBigWordLeft,
         "movewordright" => EditCommand::MoveWordRight,
+        "movewordrightend" => EditCommand::MoveWordRightEnd,
+        "movebigwordrightend" => EditCommand::MoveBigWordRightEnd,
+        "movewordrightstart" => EditCommand::MoveWordRightStart,
+        "movebigwordrightstart" => EditCommand::MoveBigWordRightStart,
+        "movetoposition" => {
+            let value = extract_value("value", cols, vals, span)?;
+            EditCommand::MoveToPosition(value.as_integer()? as usize)
+        }
         "insertchar" => {
             let value = extract_value("value", cols, vals, span)?;
             let char = extract_char(value, config)?;
@@ -885,6 +896,7 @@ fn edit_from_record(
         "insertnewline" => EditCommand::InsertNewline,
         "backspace" => EditCommand::Backspace,
         "delete" => EditCommand::Delete,
+        "cutchar" => EditCommand::CutChar,
         "backspaceword" => EditCommand::BackspaceWord,
         "deleteword" => EditCommand::DeleteWord,
         "clear" => EditCommand::Clear,
@@ -895,7 +907,11 @@ fn edit_from_record(
         "cuttoend" => EditCommand::CutToEnd,
         "cuttolineend" => EditCommand::CutToLineEnd,
         "cutwordleft" => EditCommand::CutWordLeft,
+        "cutbigwordleft" => EditCommand::CutBigWordLeft,
         "cutwordright" => EditCommand::CutWordRight,
+        "cutbigwordright" => EditCommand::CutBigWordRight,
+        "cutwordrighttonext" => EditCommand::CutWordRightToNext,
+        "cutbigwordrighttonext" => EditCommand::CutBigWordRightToNext,
         "pastecutbufferbefore" => EditCommand::PasteCutBufferBefore,
         "pastecutbufferafter" => EditCommand::PasteCutBufferAfter,
         "uppercaseword" => EditCommand::UppercaseWord,

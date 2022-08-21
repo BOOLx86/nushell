@@ -5,16 +5,16 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
 };
-use polars::prelude::{IntoSeries, TimeUnit};
+use polars::prelude::{IntoSeries, TimeUnit, Utf8Methods};
 
 #[derive(Clone)]
 pub struct AsDateTime;
 
 impl Command for AsDateTime {
     fn name(&self) -> &str {
-        "dfr as-datetime"
+        "as-datetime"
     }
 
     fn usage(&self) -> &str {
@@ -40,13 +40,15 @@ impl Command for AsDateTime {
         Signature::build(self.name())
             .required("format", SyntaxShape::String, "formatting date time string")
             .switch("not-exact", "the format string may be contained in the date (e.g. foo-2021-01-01-bar could match 2021-01-01)", Some('n'))
-            .category(Category::Custom("dataframe".into()))
+                        .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
+.category(Category::Custom("dataframe".into()))
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
             description: "Converts string to datetime",
-            example: r#"["2021-12-30 00:00:00" "2021-12-31 00:00:00"] | dfr to-df | dfr as-datetime "%Y-%m-%d %H:%M:%S""#,
+            example: r#"["2021-12-30 00:00:00" "2021-12-31 00:00:00"] | into df | as-datetime "%Y-%m-%d %H:%M:%S""#,
             result: Some(
                 NuDataFrame::try_from_columns(vec![Column::new(
                     "datetime".to_string(),

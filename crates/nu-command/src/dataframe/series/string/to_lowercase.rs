@@ -3,16 +3,16 @@ use super::super::super::values::{Column, NuDataFrame};
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, Type, Value,
 };
-use polars::prelude::IntoSeries;
+use polars::prelude::{IntoSeries, Utf8NameSpaceImpl};
 
 #[derive(Clone)]
 pub struct ToLowerCase;
 
 impl Command for ToLowerCase {
     fn name(&self) -> &str {
-        "dfr to-lowercase"
+        "lowercase"
     }
 
     fn usage(&self) -> &str {
@@ -20,13 +20,16 @@ impl Command for ToLowerCase {
     }
 
     fn signature(&self) -> Signature {
-        Signature::build(self.name()).category(Category::Custom("dataframe".into()))
+        Signature::build(self.name())
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
+            .category(Category::Custom("dataframe".into()))
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
             description: "Modifies strings to lowercase",
-            example: "[Abc aBc abC] | dfr to-df | dfr to-lowercase",
+            example: "[Abc aBc abC] | into df | lowercase",
             result: Some(
                 NuDataFrame::try_from_columns(vec![Column::new(
                     "0".to_string(),

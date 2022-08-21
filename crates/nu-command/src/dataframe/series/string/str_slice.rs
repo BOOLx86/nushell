@@ -4,16 +4,16 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
 };
-use polars::prelude::IntoSeries;
+use polars::prelude::{IntoSeries, Utf8NameSpaceImpl};
 
 #[derive(Clone)]
 pub struct StrSlice;
 
 impl Command for StrSlice {
     fn name(&self) -> &str {
-        "dfr str-slice"
+        "str-slice"
     }
 
     fn usage(&self) -> &str {
@@ -24,13 +24,15 @@ impl Command for StrSlice {
         Signature::build(self.name())
             .required("start", SyntaxShape::Int, "start of slice")
             .named("length", SyntaxShape::Int, "optional length", Some('l'))
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
             .category(Category::Custom("dataframe".into()))
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
             description: "Creates slices from the strings",
-            example: "[abcded abc321 abc123] | dfr to-df | dfr str-slice 1 -l 2",
+            example: "[abcded abc321 abc123] | into df | str-slice 1 -l 2",
             result: Some(
                 NuDataFrame::try_from_columns(vec![Column::new(
                     "0".to_string(),

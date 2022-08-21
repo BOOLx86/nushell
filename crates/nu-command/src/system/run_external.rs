@@ -1,20 +1,19 @@
-use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
-use std::process::{Command as CommandSys, Stdio};
-use std::sync::atomic::Ordering;
-use std::sync::mpsc;
-
+use fancy_regex::Regex;
+use itertools::Itertools;
 use nu_engine::env_to_strings;
+use nu_engine::CallExt;
+use nu_protocol::did_you_mean;
 use nu_protocol::engine::{EngineState, Stack};
 use nu_protocol::{ast::Call, engine::Command, ShellError, Signature, SyntaxShape, Value};
 use nu_protocol::{Category, Example, ListStream, PipelineData, RawStream, Span, Spanned};
-
-use itertools::Itertools;
-
-use nu_engine::CallExt;
+use nu_system::ForegroundProcess;
 use pathdiff::diff_paths;
-use regex::Regex;
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command as CommandSys, Stdio};
+use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 
 const OUTPUT_BUFFER_SIZE: usize = 1024;
 const OUTPUT_BUFFERS_IN_FLIGHT: usize = 3;
@@ -69,20 +68,24 @@ impl Command for External {
                 })
         }
 
-        let args = args
-            .into_iter()
-            .flat_map(|arg| match arg {
-                Value::List { vals, .. } => vals
-                    .into_iter()
-                    .map(value_as_spanned)
-                    .collect::<Vec<Result<Spanned<String>, ShellError>>>(),
-                val => vec![value_as_spanned(val)],
-            })
-            .collect::<Result<Vec<Spanned<String>>, ShellError>>()?;
+        let mut spanned_args = vec![];
+        for one_arg in args {
+            match one_arg {
+                Value::List { vals, .. } => {
+                    // turn all the strings in the array into params.
+                    // Example: one_arg may be something like ["ls" "-a"]
+                    // convert it to "ls" "-a"
+                    for v in vals {
+                        spanned_args.push(value_as_spanned(v)?)
+                    }
+                }
+                val => spanned_args.push(value_as_spanned(val)?),
+            }
+        }
 
         let command = ExternalCommand {
             name,
-            args,
+            args: spanned_args,
             redirect_stdout,
             redirect_stderr,
             env_vars: env_vars_str,
@@ -99,6 +102,7 @@ impl Command for External {
     }
 }
 
+#[derive(Clone)]
 pub struct ExternalCommand {
     pub name: Spanned<String>,
     pub args: Vec<Spanned<String>>,
@@ -118,15 +122,78 @@ impl ExternalCommand {
 
         let ctrlc = engine_state.ctrlc.clone();
 
-        let mut process = self.create_process(&input, false, head)?;
-        let child;
+        let mut fg_process = ForegroundProcess::new(self.create_process(&input, false, head)?);
+        // mut is used in the windows branch only, suppress warning on other platforms
+        #[allow(unused_mut)]
+        let mut child;
 
         #[cfg(windows)]
         {
-            match process.spawn() {
-                Err(_) => {
-                    let mut process = self.create_process(&input, true, head)?;
-                    child = process.spawn();
+            // Running external commands on Windows has 2 points of complication:
+            // 1. Some common Windows commands are actually built in to cmd.exe, not executables in their own right.
+            // 2. We need to let users run batch scripts etc. (.bat, .cmd) without typing their extension
+
+            // To support these situations, we have a fallback path that gets run if a command
+            // fails to be run as a normal executable:
+            // 1. "shell out" to cmd.exe if the command is a known cmd.exe internal command
+            // 2. Otherwise, use `which-rs` to look for batch files etc. then run those in cmd.exe
+            match fg_process.spawn() {
+                Err(err) => {
+                    // set the default value, maybe we'll override it later
+                    child = Err(err);
+
+                    // This has the full list of cmd.exe "internal" commands: https://ss64.com/nt/syntax-internal.html
+                    // I (Reilly) went through the full list and whittled it down to ones that are potentially useful:
+                    const CMD_INTERNAL_COMMANDS: [&str; 8] = [
+                        "ASSOC", "DIR", "ECHO", "FTYPE", "MKLINK", "START", "VER", "VOL",
+                    ];
+                    let command_name_upper = self.name.item.to_uppercase();
+                    let looks_like_cmd_internal = CMD_INTERNAL_COMMANDS
+                        .iter()
+                        .any(|&cmd| command_name_upper == cmd);
+
+                    if looks_like_cmd_internal {
+                        let mut cmd_process =
+                            ForegroundProcess::new(self.create_process(&input, true, head)?);
+                        child = cmd_process.spawn();
+                    } else {
+                        #[cfg(feature = "which-support")]
+                        {
+                            // maybe it's a batch file (foo.cmd) and the user typed `foo`. Try to find it with `which-rs`
+                            // TODO: clean this up with an if-let chain once those are stable
+                            if let Ok(path) =
+                                nu_engine::env::path_str(engine_state, stack, self.name.span)
+                            {
+                                if let Some(cwd) = self.env_vars.get("PWD") {
+                                    // append cwd to PATH so `which-rs` looks in the cwd too.
+                                    // this approximates what cmd.exe does.
+                                    let path_with_cwd = format!("{};{}", cwd, path);
+                                    if let Ok(which_path) =
+                                        which::which_in(&self.name.item, Some(path_with_cwd), cwd)
+                                    {
+                                        if let Some(file_name) = which_path.file_name() {
+                                            let file_name_upper =
+                                                file_name.to_string_lossy().to_uppercase();
+                                            if file_name_upper != command_name_upper {
+                                                // which-rs found an executable file with a slightly different name
+                                                // than the one the user tried. Let's try running it
+                                                let mut new_command = self.clone();
+                                                new_command.name = Spanned {
+                                                    item: file_name.to_string_lossy().to_string(),
+                                                    span: self.name.span,
+                                                };
+                                                let mut cmd_process = ForegroundProcess::new(
+                                                    new_command
+                                                        .create_process(&input, true, head)?,
+                                                );
+                                                child = cmd_process.spawn();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 Ok(process) => {
                     child = Ok(process);
@@ -136,15 +203,49 @@ impl ExternalCommand {
 
         #[cfg(not(windows))]
         {
-            child = process.spawn()
+            child = fg_process.spawn()
         }
 
         match child {
-            Err(err) => Err(ShellError::ExternalCommand(
-                "can't run executable".to_string(),
-                err.to_string(),
-                self.name.span,
-            )),
+            Err(err) => {
+                match err.kind() {
+                    // If file not found, try suggesting alternative commands to the user
+                    std::io::ErrorKind::NotFound => {
+                        // recommend a replacement if the user tried a deprecated command
+                        let command_name_lower = self.name.item.to_lowercase();
+                        let deprecated = crate::deprecated_commands();
+                        if deprecated.contains_key(&command_name_lower) {
+                            let replacement = match deprecated.get(&command_name_lower) {
+                                Some(s) => s.clone(),
+                                None => "".to_string(),
+                            };
+                            return Err(ShellError::DeprecatedCommand(
+                                command_name_lower,
+                                replacement,
+                                self.name.span,
+                            ));
+                        }
+
+                        let suggestion = suggest_command(&self.name.item, engine_state);
+                        let label = match suggestion {
+                            Some(s) => format!("did you mean '{s}'?"),
+                            None => "can't run executable".into(),
+                        };
+
+                        Err(ShellError::ExternalCommand(
+                            label,
+                            err.to_string(),
+                            self.name.span,
+                        ))
+                    }
+                    // otherwise, a default error message
+                    _ => Err(ShellError::ExternalCommand(
+                        "can't run executable".into(),
+                        err.to_string(),
+                        self.name.span,
+                    )),
+                }
+            }
             Ok(mut child) => {
                 if !input.is_nothing() {
                     let mut engine_state = engine_state.clone();
@@ -154,7 +255,7 @@ impl ExternalCommand {
                     engine_state.config.use_ansi_coloring = false;
 
                     // if there is a string or a stream, that is sent to the pipe std
-                    if let Some(mut stdin_write) = child.stdin.take() {
+                    if let Some(mut stdin_write) = child.as_mut().stdin.take() {
                         std::thread::spawn(move || {
                             let input = crate::Table::run(
                                 &crate::Table,
@@ -195,7 +296,7 @@ impl ExternalCommand {
                     // and we create a ListStream that can be consumed
 
                     if redirect_stderr {
-                        let stderr = child.stderr.take().ok_or_else(|| {
+                        let stderr = child.as_mut().stderr.take().ok_or_else(|| {
                             ShellError::ExternalCommand(
                                 "Error taking stderr from external".to_string(),
                                 "Redirects need access to stderr of an external command"
@@ -234,7 +335,7 @@ impl ExternalCommand {
                     }
 
                     if redirect_stdout {
-                        let stdout = child.stdout.take().ok_or_else(|| {
+                        let stdout = child.as_mut().stdout.take().ok_or_else(|| {
                             ShellError::ExternalCommand(
                                 "Error taking stdout from external".to_string(),
                                 "Redirects need access to stdout of an external command"
@@ -272,7 +373,7 @@ impl ExternalCommand {
                         }
                     }
 
-                    match child.wait() {
+                    match child.as_mut().wait() {
                         Err(err) => Err(ShellError::ExternalCommand(
                             "External command exited with error".into(),
                             err.to_string(),
@@ -339,7 +440,10 @@ impl ExternalCommand {
                 self.create_command(d)?
             };
 
-            process.current_dir(d);
+            // do not try to set current directory if cwd does not exist
+            if Path::new(&d).exists() {
+                process.current_dir(d);
+            }
             process
         } else {
             return Err(ShellError::GenericError(
@@ -395,7 +499,7 @@ impl ExternalCommand {
 
     /// Spawn a command without shelling out to an external shell
     pub fn spawn_simple_command(&self, cwd: &str) -> Result<std::process::Command, ShellError> {
-        let head = trim_enclosing_quotes(&self.name.item);
+        let (head, _) = trim_enclosing_quotes(&self.name.item);
         let head = nu_path::expand_to_real_path(head)
             .to_string_lossy()
             .to_string();
@@ -403,18 +507,22 @@ impl ExternalCommand {
         let mut process = std::process::Command::new(&head);
 
         for arg in self.args.iter() {
+            let (trimmed_args, run_glob_expansion) = trim_enclosing_quotes(&arg.item);
             let mut arg = Spanned {
-                item: trim_enclosing_quotes(&arg.item),
+                item: remove_quotes(trimmed_args),
                 span: arg.span,
             };
-            arg.item = nu_path::expand_to_real_path(arg.item)
+
+            arg.item = nu_path::expand_tilde(arg.item)
                 .to_string_lossy()
                 .to_string();
 
             let cwd = PathBuf::from(cwd);
 
-            if arg.item.contains('*') {
-                if let Ok((prefix, matches)) = nu_engine::glob_from(&arg, &cwd, self.name.span) {
+            if arg.item.contains('*') && run_glob_expansion {
+                if let Ok((prefix, matches)) =
+                    nu_engine::glob_from(&arg, &cwd, self.name.span, None)
+                {
                     let matches: Vec<_> = matches.collect();
 
                     // FIXME: do we want to special-case this further? We might accidentally expand when they don't
@@ -489,10 +597,28 @@ impl ExternalCommand {
     }
 }
 
+/// Given an invalid command name, try to suggest an alternative
+fn suggest_command(attempted_command: &str, engine_state: &EngineState) -> Option<String> {
+    let commands = engine_state.get_signatures(false);
+    let command_name_lower = attempted_command.to_lowercase();
+    let search_term_match = commands.iter().find(|sig| {
+        sig.search_terms
+            .iter()
+            .any(|term| term.to_lowercase() == command_name_lower)
+    });
+    match search_term_match {
+        Some(sig) => Some(sig.name.clone()),
+        None => {
+            let command_names: Vec<String> = commands.iter().map(|sig| sig.name.clone()).collect();
+            did_you_mean(&command_names, attempted_command)
+        }
+    }
+}
+
 fn has_unsafe_shell_characters(arg: &str) -> bool {
     let re: Regex = Regex::new(r"[^\w@%+=:,./-]").expect("regex to be valid");
 
-    re.is_match(arg)
+    re.is_match(arg).unwrap_or(false)
 }
 
 fn shell_arg_escape(arg: &str) -> String {
@@ -506,14 +632,27 @@ fn shell_arg_escape(arg: &str) -> String {
     }
 }
 
-fn trim_enclosing_quotes(input: &str) -> String {
+fn trim_enclosing_quotes(input: &str) -> (String, bool) {
     let mut chars = input.chars();
 
     match (chars.next(), chars.next_back()) {
-        (Some('"'), Some('"')) => chars.collect(),
-        (Some('\''), Some('\'')) => chars.collect(),
-        (Some('`'), Some('`')) => chars.collect(),
-        _ => input.to_string(),
+        (Some('"'), Some('"')) => (chars.collect(), false),
+        (Some('\''), Some('\'')) => (chars.collect(), false),
+        (Some('`'), Some('`')) => (chars.collect(), true),
+        _ => (input.to_string(), true),
+    }
+}
+
+fn remove_quotes(input: String) -> String {
+    let mut chars = input.chars();
+
+    match (chars.next_back(), input.contains('=')) {
+        (Some('"'), true) => chars
+            .collect::<String>()
+            .replacen('"', "", 1)
+            .replace(r#"\""#, "\""),
+        (Some('\''), true) => chars.collect::<String>().replacen('\'', "", 1),
+        _ => input,
     }
 }
 
@@ -560,5 +699,42 @@ impl Iterator for ValueReceiver {
             Ok(v) => Some(v),
             Err(_) => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn remove_quotes_argument_with_equal_test() {
+        let input = r#"--file="my_file.txt""#.into();
+        let res = remove_quotes(input);
+
+        assert_eq!("--file=my_file.txt", res)
+    }
+
+    #[test]
+    fn argument_without_equal_test() {
+        let input = r#"--file "my_file.txt""#.into();
+        let res = remove_quotes(input);
+
+        assert_eq!(r#"--file "my_file.txt""#, res)
+    }
+
+    #[test]
+    fn remove_quotes_argument_with_single_quotes_test() {
+        let input = r#"--file='my_file.txt'"#.into();
+        let res = remove_quotes(input);
+
+        assert_eq!("--file=my_file.txt", res)
+    }
+
+    #[test]
+    fn argument_with_inner_quotes_test() {
+        let input = r#"bash -c 'echo a'"#.into();
+        let res = remove_quotes(input);
+
+        assert_eq!("bash -c 'echo a'", res)
     }
 }

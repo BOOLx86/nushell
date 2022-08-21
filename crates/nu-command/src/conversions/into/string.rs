@@ -2,11 +2,11 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::{Call, CellPath},
     engine::{Command, EngineState, Stack},
-    Category, Config, Example, IntoPipelineData, PipelineData, ShellError, Signature, Span,
-    SyntaxShape, Value,
+    into_code, Category, Config, Example, IntoPipelineData, PipelineData, ShellError, Signature,
+    Span, SyntaxShape, Value,
 };
-
-// TODO num_format::SystemLocale once platform-specific dependencies are stable (see Cargo.toml)
+use nu_utils::get_system_locale;
+use num_format::ToFormattedString;
 
 #[derive(Clone)]
 pub struct SubCommand;
@@ -53,6 +53,14 @@ impl Command for SubCommand {
 
     fn examples(&self) -> Vec<Example> {
         vec![
+            Example {
+                description: "convert integer to string and append three decimal places",
+                example: "5 | into string -d 3",
+                result: Some(Value::String {
+                    val: "5.000".to_string(),
+                    span: Span::test_data(),
+                }),
+            },
             Example {
                 description: "convert decimal to string and round to nearest integer",
                 example: "1.7 | into string -d 0",
@@ -208,12 +216,8 @@ pub fn action(
 ) -> Value {
     match input {
         Value::Int { val, .. } => {
-            let res = if group_digits {
-                format_int(*val) // int.to_formatted_string(*locale)
-            } else {
-                val.to_string()
-            };
-
+            let decimal_value = digits.unwrap_or(0) as usize;
+            let res = format_int(*val, group_digits, decimal_value);
             Value::String { val: res, span }
         }
         Value::Float { val, .. } => {
@@ -247,8 +251,17 @@ pub fn action(
             val: input.into_string(", ", config),
             span,
         },
+        Value::Error { error } => Value::String {
+            val: {
+                match into_code(error) {
+                    Some(code) => code,
+                    None => "".to_string(),
+                }
+            },
+            span,
+        },
         Value::Nothing { .. } => Value::String {
-            val: "nothing".to_string(),
+            val: "".to_string(),
             span,
         },
         Value::Record {
@@ -279,21 +292,29 @@ pub fn action(
         },
     }
 }
-fn format_int(int: i64) -> String {
-    int.to_string()
 
-    // TODO once platform-specific dependencies are stable (see Cargo.toml)
-    // #[cfg(windows)]
-    // {
-    //     int.to_formatted_string(&Locale::en)
-    // }
-    // #[cfg(not(windows))]
-    // {
-    //     match SystemLocale::default() {
-    //         Ok(locale) => int.to_formatted_string(&locale),
-    //         Err(_) => int.to_formatted_string(&Locale::en),
-    //     }
-    // }
+fn format_int(int: i64, group_digits: bool, decimals: usize) -> String {
+    let locale = get_system_locale();
+
+    let str = if group_digits {
+        int.to_formatted_string(&locale)
+    } else {
+        int.to_string()
+    };
+
+    if decimals > 0 {
+        let decimal_point = locale.decimal();
+
+        format!(
+            "{}{decimal_point}{dummy:0<decimals$}",
+            str,
+            decimal_point = decimal_point,
+            dummy = "",
+            decimals = decimals
+        )
+    } else {
+        str
+    }
 }
 
 #[cfg(test)]

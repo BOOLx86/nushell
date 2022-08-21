@@ -4,7 +4,8 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, Spanned, SyntaxShape, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, Spanned, SyntaxShape, Type,
+    Value,
 };
 use polars::prelude::{DataType, IntoSeries};
 
@@ -44,7 +45,7 @@ pub struct Cumulative;
 
 impl Command for Cumulative {
     fn name(&self) -> &str {
-        "dfr cumulative"
+        "cumulative"
     }
 
     fn usage(&self) -> &str {
@@ -55,13 +56,15 @@ impl Command for Cumulative {
         Signature::build(self.name())
             .required("type", SyntaxShape::String, "rolling operation")
             .switch("reverse", "Reverse cumulative calculation", Some('r'))
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
             .category(Category::Custom("dataframe".into()))
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
             description: "Cumulative sum for a series",
-            example: "[1 2 3 4 5] | dfr to-df | dfr cumulative sum",
+            example: "[1 2 3 4 5] | into df | cumulative sum",
             result: Some(
                 NuDataFrame::try_from_columns(vec![Column::new(
                     "0_cumulative_sum".to_string(),

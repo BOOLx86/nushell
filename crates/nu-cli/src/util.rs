@@ -9,18 +9,35 @@ use nu_protocol::{
 };
 #[cfg(windows)]
 use nu_utils::enable_vt_processing;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // This will collect environment variables from std::env and adds them to a stack.
 //
 // In order to ensure the values have spans, it first creates a dummy file, writes the collected
 // env vars into it (in a "NAME"="value" format, quite similar to the output of the Unix 'env'
 // tool), then uses the file to get the spans. The file stays in memory, no filesystem IO is done.
-pub fn gather_parent_env_vars(engine_state: &mut EngineState) {
-    gather_env_vars(std::env::vars(), engine_state);
+//
+// The "PWD" env value will be forced to `init_cwd`.
+// The reason to use `init_cwd`:
+//
+// While gathering parent env vars, the parent `PWD` may not be the same as `current working directory`.
+// Consider to the following command as the case (assume we execute command inside `/tmp`):
+//
+//     tmux split-window -v -c "#{pane_current_path}"
+//
+// Here nu execute external command `tmux`, and tmux starts a new `nushell`, with `init_cwd` value "#{pane_current_path}".
+// But at the same time `PWD` still remains to be `/tmp`.
+//
+// In this scenario, the new `nushell`'s PWD should be "#{pane_current_path}" rather init_cwd.
+pub fn gather_parent_env_vars(engine_state: &mut EngineState, init_cwd: &Path) {
+    gather_env_vars(std::env::vars(), engine_state, init_cwd);
 }
 
-fn gather_env_vars(vars: impl Iterator<Item = (String, String)>, engine_state: &mut EngineState) {
+fn gather_env_vars(
+    vars: impl Iterator<Item = (String, String)>,
+    engine_state: &mut EngineState,
+    init_cwd: &Path,
+) {
     fn report_capture_error(engine_state: &EngineState, env_str: &str, msg: &str) {
         let working_set = StateWorkingSet::new(engine_state);
         report_error(
@@ -43,35 +60,31 @@ fn gather_env_vars(vars: impl Iterator<Item = (String, String)>, engine_state: &
     }
 
     let mut fake_env_file = String::new();
-    let mut has_pwd = false;
-
     // Write all the env vars into a fake file
     for (name, val) in vars {
-        if name == "PWD" {
-            has_pwd = true;
-        }
         put_env_to_fake_file(&name, &val, &mut fake_env_file);
     }
 
-    if !has_pwd {
-        match std::env::current_dir() {
-            Ok(cwd) => {
-                put_env_to_fake_file("PWD", &cwd.to_string_lossy(), &mut fake_env_file);
-            }
-            Err(e) => {
-                // Could not capture current working directory
-                let working_set = StateWorkingSet::new(engine_state);
-                report_error(
-                    &working_set,
-                    &ShellError::GenericError(
-                        "Current directory not found".to_string(),
-                        "".to_string(),
-                        None,
-                        Some(format!("Retrieving current directory failed: {:?}", e)),
-                        Vec::new(),
-                    ),
-                );
-            }
+    match init_cwd.to_str() {
+        Some(cwd) => {
+            put_env_to_fake_file("PWD", cwd, &mut fake_env_file);
+        }
+        None => {
+            // Could not capture current working directory
+            let working_set = StateWorkingSet::new(engine_state);
+            report_error(
+                &working_set,
+                &ShellError::GenericError(
+                    "Current directory is not a valid utf-8 path".to_string(),
+                    "".to_string(),
+                    None,
+                    Some(format!(
+                        "Retrieving current directory failed: {:?} not a valid utf-8 path",
+                        init_cwd
+                    )),
+                    Vec::new(),
+                ),
+            );
         }
     }
 
@@ -179,7 +192,7 @@ fn gather_env_vars(vars: impl Iterator<Item = (String, String)>, engine_state: &
             };
 
             // stack.add_env_var(name, value);
-            engine_state.env_vars.insert(name, value);
+            engine_state.add_env_var(name, value);
         }
     }
 }
@@ -211,24 +224,16 @@ pub fn eval_source(
         (output, working_set.render())
     };
 
-    let cwd = match nu_engine::env::current_dir_str(engine_state, stack) {
-        Ok(p) => PathBuf::from(p),
-        Err(e) => {
-            let working_set = StateWorkingSet::new(engine_state);
-            report_error(&working_set, &e);
-            get_init_cwd()
-        }
-    };
-
-    if let Err(err) = engine_state.merge_delta(delta, Some(stack), &cwd) {
-        let working_set = StateWorkingSet::new(engine_state);
-        report_error(&working_set, &err);
+    if let Err(err) = engine_state.merge_delta(delta) {
+        set_last_exit_code(stack, 1);
+        report_error_new(engine_state, &err);
+        return false;
     }
 
     match eval_block(engine_state, stack, &block, input, false, false) {
         Ok(mut pipeline_data) => {
             if let PipelineData::ExternalStream { exit_code, .. } = &mut pipeline_data {
-                if let Some(exit_code) = exit_code.take().and_then(|it| it.last()) {
+                if let Some((exit_code, _)) = exit_code.take().and_then(|it| it.last()) {
                     stack.add_env_var("LAST_EXIT_CODE".to_string(), exit_code);
                 } else {
                     set_last_exit_code(stack, 0);
@@ -237,7 +242,7 @@ pub fn eval_source(
                 set_last_exit_code(stack, 0);
             }
 
-            if let Err(err) = pipeline_data.print(engine_state, stack) {
+            if let Err(err) = pipeline_data.print(engine_state, stack, false, false) {
                 let working_set = StateWorkingSet::new(engine_state);
 
                 report_error(&working_set, &err);
@@ -287,6 +292,15 @@ pub fn report_error(
     }
 }
 
+pub fn report_error_new(
+    engine_state: &EngineState,
+    error: &(dyn miette::Diagnostic + Send + Sync + 'static),
+) {
+    let working_set = StateWorkingSet::new(engine_state);
+
+    report_error(&working_set, error);
+}
+
 pub fn get_init_cwd() -> PathBuf {
     match std::env::current_dir() {
         Ok(cwd) => cwd,
@@ -297,6 +311,17 @@ pub fn get_init_cwd() -> PathBuf {
                 None => PathBuf::new(),
             },
         },
+    }
+}
+
+pub fn get_guaranteed_cwd(engine_state: &EngineState, stack: &Stack) -> PathBuf {
+    match nu_engine::env::current_dir(engine_state, stack) {
+        Ok(p) => p,
+        Err(e) => {
+            let working_set = StateWorkingSet::new(engine_state);
+            report_error(&working_set, &e);
+            get_init_cwd()
+        }
     }
 }
 
@@ -317,14 +342,21 @@ mod test {
             ]
             .into_iter(),
             &mut engine_state,
+            Path::new("t"),
         );
 
-        let env = engine_state.env_vars;
+        let env = engine_state.render_env_vars();
 
-        assert!(matches!(env.get("FOO"), Some(Value::String { val, .. }) if val == "foo"));
-        assert!(matches!(env.get("SYMBOLS"), Some(Value::String { val, .. }) if val == symbols));
-        assert!(matches!(env.get(symbols), Some(Value::String { val, .. }) if val == "symbols"));
-        assert!(env.get("PWD").is_some());
+        assert!(
+            matches!(env.get(&"FOO".to_string()), Some(&Value::String { val, .. }) if val == "foo")
+        );
+        assert!(
+            matches!(env.get(&"SYMBOLS".to_string()), Some(&Value::String { val, .. }) if val == symbols)
+        );
+        assert!(
+            matches!(env.get(&symbols.to_string()), Some(&Value::String { val, .. }) if val == "symbols")
+        );
+        assert!(env.get(&"PWD".to_string()).is_some());
         assert_eq!(env.len(), 4);
     }
 }

@@ -1,8 +1,8 @@
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, IntoInterruptiblePipelineData, PipelineData, ShellError, Signature, Span,
-    Value,
+    Category, Example, IntoInterruptiblePipelineData, IntoPipelineData, PipelineData, ShellError,
+    Signature, Span, Value,
 };
 use std::cmp::Ordering;
 
@@ -21,6 +21,11 @@ impl Command for Sort {
                 "insensitive",
                 "Sort string-based columns case-insensitively",
                 Some('i'),
+            )
+            .switch(
+                "values",
+                "If input is a single record, sort the record by values, ignored if input is not a single record",
+                Some('v'),
             )
             .category(Category::Filters)
     }
@@ -95,6 +100,24 @@ impl Command for Sort {
                     span: Span::test_data(),
                 }),
             },
+            Example {
+                description: "Sort record by key",
+                example: "{b: 3, a: 4} | sort",
+                result: Some(Value::Record {
+                    cols: vec!["a".to_string(), "b".to_string()],
+                    vals: vec![Value::test_int(4), Value::test_int(3)],
+                    span: Span::test_data(),
+                }),
+            },
+            Example {
+                description: "Sort record by value",
+                example: "{a: 4, b: 3} | sort",
+                result: Some(Value::Record {
+                    cols: vec!["b".to_string(), "a".to_string()],
+                    vals: vec![Value::test_int(3), Value::test_int(4)],
+                    span: Span::test_data(),
+                }),
+            },
         ]
     }
 
@@ -108,21 +131,55 @@ impl Command for Sort {
         let reverse = call.has_flag("reverse");
         let insensitive = call.has_flag("insensitive");
         let metadata = &input.metadata();
-        let mut vec: Vec<_> = input.into_iter().collect();
 
-        sort(&mut vec, call.head, insensitive)?;
-
-        if reverse {
-            vec.reverse()
-        }
-
-        let iter = vec.into_iter();
-        match &*metadata {
-            Some(m) => {
-                Ok(iter.into_pipeline_data_with_metadata(m.clone(), engine_state.ctrlc.clone()))
+        match input {
+            PipelineData::Value(Value::Record { cols, vals, span }, ..) => {
+                let sort_by_value = call.has_flag("values");
+                let record = sort_record(cols, vals, span, sort_by_value);
+                Ok(record.into_pipeline_data())
             }
-            None => Ok(iter.into_pipeline_data(engine_state.ctrlc.clone())),
+            PipelineData::Value(v, ..)
+                if !matches!(v, Value::List { .. } | Value::Range { .. }) =>
+            {
+                Ok(v.into_pipeline_data())
+            }
+            pipe_data => {
+                let mut vec: Vec<_> = pipe_data.into_iter().collect();
+
+                sort(&mut vec, call.head, insensitive)?;
+
+                if reverse {
+                    vec.reverse()
+                }
+
+                let iter = vec.into_iter();
+                match metadata {
+                    Some(m) => Ok(iter
+                        .into_pipeline_data_with_metadata(m.clone(), engine_state.ctrlc.clone())),
+                    None => Ok(iter.into_pipeline_data(engine_state.ctrlc.clone())),
+                }
+            }
         }
+    }
+}
+
+fn sort_record(cols: Vec<String>, vals: Vec<Value>, rec_span: Span, sort_by_value: bool) -> Value {
+    let mut input_pairs: Vec<(String, Value)> = cols.into_iter().zip(vals).collect();
+    if sort_by_value {
+        input_pairs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+    } else {
+        input_pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
+    }
+    let mut new_cols = Vec::with_capacity(input_pairs.len());
+    let mut new_vals = Vec::with_capacity(input_pairs.len());
+    for (col, val) in input_pairs {
+        new_cols.push(col);
+        new_vals.push(val)
+    }
+    Value::Record {
+        cols: new_cols,
+        vals: new_vals,
+        span: rec_span,
     }
 }
 

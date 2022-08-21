@@ -27,7 +27,14 @@ impl Command for Columns {
             Example {
                 example: "[[name,age,grade]; [bill,20,a]] | columns",
                 description: "Get the columns from the table",
-                result: None,
+                result: Some(Value::List {
+                    vals: vec![
+                        Value::test_string("name"),
+                        Value::test_string("age"),
+                        Value::test_string("grade"),
+                    ],
+                    span: Span::test_data(),
+                }),
             },
             Example {
                 example: "[[name,age,grade]; [bill,20,a]] | columns | first",
@@ -84,7 +91,7 @@ fn getcol(
                 .into_pipeline_data(engine_state.ctrlc.clone()))
         }
         PipelineData::ListStream(stream, ..) => {
-            let v: Vec<_> = stream.into_iter().collect();
+            let v: Vec<_> = stream.into_iter().map(|(v, _)| v).collect();
             let input_cols = get_columns(&v);
 
             Ok(input_cols

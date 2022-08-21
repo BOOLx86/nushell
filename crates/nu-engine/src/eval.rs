@@ -1,14 +1,15 @@
 use crate::{current_dir_str, get_full_help};
 use nu_path::expand_path_with;
-use nu_protocol::ast::{Block, Call, Expr, Expression, Operator};
-use nu_protocol::engine::{EngineState, Stack, Visibility};
 use nu_protocol::{
-    IntoInterruptiblePipelineData, IntoPipelineData, PipelineData, Range, ShellError, Span,
-    Spanned, SyntaxShape, Unit, Value, VarId, ENV_VARIABLE_ID,
+    ast::{Block, Call, Expr, Expression, Operator},
+    engine::{EngineState, Stack, Visibility},
+    Config, HistoryFileFormat, IntoInterruptiblePipelineData, IntoPipelineData, ListStream,
+    PipelineData, Range, ShellError, Span, Spanned, SyntaxShape, Unit, Value, VarId,
+    ENV_VARIABLE_ID,
 };
+use nu_utils::stdout_write_all_and_flush;
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::io::Write;
 use sysinfo::SystemExt;
 
 pub fn eval_operator(op: &Expression) -> Result<Operator, ShellError> {
@@ -29,6 +30,11 @@ pub fn eval_call(
     call: &Call,
     input: PipelineData,
 ) -> Result<PipelineData, ShellError> {
+    if let Some(ctrlc) = &engine_state.ctrlc {
+        if ctrlc.load(core::sync::atomic::Ordering::SeqCst) {
+            return Ok(Value::Nothing { span: call.head }.into_pipeline_data());
+        }
+    }
     let decl = engine_state.get_decl(call.decl_id);
 
     if !decl.is_known_external() && call.named_iter().any(|(flag, _, _)| flag.item == "help") {
@@ -153,22 +159,7 @@ pub fn eval_call(
         );
 
         if block.redirect_env {
-            let caller_env_vars = caller_stack.get_env_var_names(engine_state);
-
-            // remove env vars that are present in the caller but not in the callee
-            // (the callee hid them)
-            for var in caller_env_vars.iter() {
-                if !callee_stack.has_env_var(engine_state, var) {
-                    caller_stack.remove_env_var(engine_state, var);
-                }
-            }
-
-            // add new env vars from callee to caller
-            for env_vars in callee_stack.env_vars {
-                for (var, value) in env_vars {
-                    caller_stack.add_env_var(var, value);
-                }
-            }
+            redirect_env(engine_state, caller_stack, &callee_stack);
         }
 
         result
@@ -180,6 +171,27 @@ pub fn eval_call(
     }
 }
 
+/// Redirect the environment from callee to the caller.
+pub fn redirect_env(engine_state: &EngineState, caller_stack: &mut Stack, callee_stack: &Stack) {
+    let caller_env_vars = caller_stack.get_env_var_names(engine_state);
+
+    // remove env vars that are present in the caller but not in the callee
+    // (the callee hid them)
+    for var in caller_env_vars.iter() {
+        if !callee_stack.has_env_var(engine_state, var) {
+            caller_stack.remove_env_var(engine_state, var);
+        }
+    }
+
+    // add new env vars from callee to caller
+    for (var, value) in callee_stack.get_stack_env_vars() {
+        caller_stack.add_env_var(var, value);
+    }
+}
+
+/// Eval extarnal expression
+///
+/// It returns PipelineData with a boolean flag, indicate that if the external runs to failed.
 fn eval_external(
     engine_state: &EngineState,
     stack: &mut Stack,
@@ -188,9 +200,9 @@ fn eval_external(
     input: PipelineData,
     redirect_stdout: bool,
     redirect_stderr: bool,
-) -> Result<PipelineData, ShellError> {
+) -> Result<(PipelineData, bool), ShellError> {
     let decl_id = engine_state
-        .find_decl("run-external".as_bytes())
+        .find_decl("run-external".as_bytes(), &[])
         .ok_or(ShellError::ExternalNotSupported(head.span))?;
 
     let command = engine_state.get_decl(decl_id);
@@ -225,7 +237,57 @@ fn eval_external(
         ))
     }
 
-    command.run(engine_state, stack, &call, input)
+    // when the external command doesn't redirect output, we eagerly check the result
+    // and find if the command runs to failed.
+    let mut runs_to_failed = false;
+    let result = command.run(engine_state, stack, &call, input)?;
+    if let PipelineData::ExternalStream {
+        stdout: None,
+        stderr,
+        mut exit_code,
+        span,
+        metadata,
+    } = result
+    {
+        let exit_code = exit_code.take();
+        match exit_code {
+            Some(exit_code_stream) => {
+                let ctrlc = exit_code_stream.ctrlc.clone();
+                let exit_code: Vec<Value> = exit_code_stream
+                    .into_iter()
+                    .map(|(value, _)| value)
+                    .collect();
+                if let Some(Value::Int { val: code, .. }) = exit_code.last() {
+                    // if exit_code is not 0, it indicates error occured, return back Err.
+                    if *code != 0 {
+                        runs_to_failed = true;
+                    }
+                }
+                Ok((
+                    PipelineData::ExternalStream {
+                        stdout: None,
+                        stderr,
+                        exit_code: Some(ListStream::from_stream(exit_code.into_iter(), ctrlc)),
+                        span,
+                        metadata,
+                    },
+                    runs_to_failed,
+                ))
+            }
+            None => Ok((
+                PipelineData::ExternalStream {
+                    stdout: None,
+                    stderr,
+                    exit_code: None,
+                    span,
+                    metadata,
+                },
+                runs_to_failed,
+            )),
+        }
+    } else {
+        Ok((result, runs_to_failed))
+    }
 }
 
 pub fn eval_expression(
@@ -292,7 +354,7 @@ pub fn eval_expression(
         Expr::FullCellPath(cell_path) => {
             let value = eval_expression(engine_state, stack, &cell_path.head)?;
 
-            value.follow_cell_path(&cell_path.tail)
+            value.follow_cell_path(&cell_path.tail, false)
         }
         Expr::ImportPattern(_) => Ok(Value::Nothing { span: expr.span }),
         Expr::Call(call) => {
@@ -314,6 +376,7 @@ pub fn eval_expression(
                 false,
                 false,
             )?
+            .0
             .into_value(span))
         }
         Expr::DateTime(dt) => Ok(Value::Date {
@@ -419,6 +482,10 @@ pub fn eval_expression(
                     let rhs = eval_expression(engine_state, stack, rhs)?;
                     lhs.modulo(op_span, &rhs, expr.span)
                 }
+                Operator::FloorDivision => {
+                    let rhs = eval_expression(engine_state, stack, rhs)?;
+                    lhs.floor_div(op_span, &rhs, expr.span)
+                }
                 Operator::Pow => {
                     let rhs = eval_expression(engine_state, stack, rhs)?;
                     lhs.pow(op_span, &rhs, expr.span)
@@ -426,6 +493,30 @@ pub fn eval_expression(
                 Operator::StartsWith => {
                     let rhs = eval_expression(engine_state, stack, rhs)?;
                     lhs.starts_with(op_span, &rhs, expr.span)
+                }
+                Operator::EndsWith => {
+                    let rhs = eval_expression(engine_state, stack, rhs)?;
+                    lhs.ends_with(op_span, &rhs, expr.span)
+                }
+                Operator::BitOr => {
+                    let rhs = eval_expression(engine_state, stack, rhs)?;
+                    lhs.bit_or(op_span, &rhs, expr.span)
+                }
+                Operator::BitXor => {
+                    let rhs = eval_expression(engine_state, stack, rhs)?;
+                    lhs.bit_xor(op_span, &rhs, expr.span)
+                }
+                Operator::BitAnd => {
+                    let rhs = eval_expression(engine_state, stack, rhs)?;
+                    lhs.bit_and(op_span, &rhs, expr.span)
+                }
+                Operator::ShiftRight => {
+                    let rhs = eval_expression(engine_state, stack, rhs)?;
+                    lhs.bit_shr(op_span, &rhs, expr.span)
+                }
+                Operator::ShiftLeft => {
+                    let rhs = eval_expression(engine_state, stack, rhs)?;
+                    lhs.bit_shl(op_span, &rhs, expr.span)
                 }
             }
         }
@@ -465,8 +556,18 @@ pub fn eval_expression(
             let mut cols = vec![];
             let mut vals = vec![];
             for (col, val) in fields {
-                cols.push(eval_expression(engine_state, stack, col)?.as_string()?);
-                vals.push(eval_expression(engine_state, stack, val)?);
+                // avoid duplicate cols.
+                let col_name = eval_expression(engine_state, stack, col)?.as_string()?;
+                let pos = cols.iter().position(|c| c == &col_name);
+                match pos {
+                    Some(index) => {
+                        vals[index] = eval_expression(engine_state, stack, val)?;
+                    }
+                    None => {
+                        cols.push(col_name);
+                        vals.push(eval_expression(engine_state, stack, val)?);
+                    }
+                }
             }
 
             Ok(Value::Record {
@@ -563,6 +664,9 @@ pub fn eval_expression(
 /// Checks the expression to see if it's a internal or external call. If so, passes the input
 /// into the call and gets out the result
 /// Otherwise, invokes the expression
+///
+/// It returns PipelineData with a boolean flag, indicate that if the external runs to failed.
+/// The boolean flag **may only be true** for external calls, for internal calls, it always to be false.
 pub fn eval_expression_with_input(
     engine_state: &EngineState,
     stack: &mut Stack,
@@ -570,7 +674,8 @@ pub fn eval_expression_with_input(
     mut input: PipelineData,
     redirect_stdout: bool,
     redirect_stderr: bool,
-) -> Result<PipelineData, ShellError> {
+) -> Result<(PipelineData, bool), ShellError> {
+    let mut external_failed = false;
     match expr {
         Expression {
             expr: Expr::Call(call),
@@ -590,7 +695,7 @@ pub fn eval_expression_with_input(
             expr: Expr::ExternalCall(head, args),
             ..
         } => {
-            input = eval_external(
+            let external_result = eval_external(
                 engine_state,
                 stack,
                 head,
@@ -599,6 +704,8 @@ pub fn eval_expression_with_input(
                 redirect_stdout,
                 redirect_stderr,
             )?;
+            input = external_result.0;
+            external_failed = external_result.1
         }
 
         Expression {
@@ -616,7 +723,7 @@ pub fn eval_expression_with_input(
         }
     }
 
-    Ok(input)
+    Ok((input, external_failed))
 }
 
 pub fn eval_block(
@@ -630,14 +737,22 @@ pub fn eval_block(
     let num_pipelines = block.len();
     for (pipeline_idx, pipeline) in block.pipelines.iter().enumerate() {
         for (i, elem) in pipeline.expressions.iter().enumerate() {
-            input = eval_expression_with_input(
+            // if eval internal command failed, it can just make early return with `Err(ShellError)`.
+            let eval_result = eval_expression_with_input(
                 engine_state,
                 stack,
                 elem,
                 input,
                 redirect_stdout || (i != pipeline.expressions.len() - 1),
                 redirect_stderr,
-            )?
+            )?;
+            input = eval_result.0;
+            // external command may runs to failed
+            // make early return so remaining commands will not be executed.
+            // don't return `Err(ShellError)`, so nushell wouldn't show extra error message.
+            if eval_result.1 {
+                return Ok(input);
+            }
         }
 
         if pipeline_idx < (num_pipelines) - 1 {
@@ -651,7 +766,7 @@ pub fn eval_block(
                     // Drain the input to the screen via tabular output
                     let config = engine_state.get_config();
 
-                    match engine_state.find_decl("table".as_bytes()) {
+                    match engine_state.find_decl("table".as_bytes(), &[]) {
                         Some(decl_id) => {
                             let table = engine_state.get_decl(decl_id).run(
                                 engine_state,
@@ -660,43 +775,15 @@ pub fn eval_block(
                                 input,
                             )?;
 
-                            for item in table {
-                                let stdout = std::io::stdout();
-
-                                if let Value::Error { error } = item {
-                                    return Err(error);
-                                }
-
-                                let mut out = item.into_string("\n", config);
-                                out.push('\n');
-
-                                match stdout.lock().write_all(out.as_bytes()) {
-                                    Ok(_) => (),
-                                    Err(err) => eprintln!("{}", err),
-                                };
-                            }
+                            print_or_return(table, config)?;
                         }
                         None => {
-                            for item in input {
-                                let stdout = std::io::stdout();
-
-                                if let Value::Error { error } = item {
-                                    return Err(error);
-                                }
-
-                                let mut out = item.into_string("\n", config);
-                                out.push('\n');
-
-                                match stdout.lock().write_all(out.as_bytes()) {
-                                    Ok(_) => (),
-                                    Err(err) => eprintln!("{}", err),
-                                };
-                            }
+                            print_or_return(input, config)?;
                         }
                     };
 
                     if let Some(exit_code) = exit_code {
-                        let mut v: Vec<_> = exit_code.collect();
+                        let mut v: Vec<_> = exit_code.map(|(value, _)| value).collect();
 
                         if let Some(v) = v.pop() {
                             stack.add_env_var("LAST_EXIT_CODE".into(), v);
@@ -707,7 +794,7 @@ pub fn eval_block(
                     // Drain the input to the screen via tabular output
                     let config = engine_state.get_config();
 
-                    match engine_state.find_decl("table".as_bytes()) {
+                    match engine_state.find_decl("table".as_bytes(), &[]) {
                         Some(decl_id) => {
                             let table = engine_state.get_decl(decl_id).run(
                                 engine_state,
@@ -716,38 +803,10 @@ pub fn eval_block(
                                 input,
                             )?;
 
-                            for item in table {
-                                let stdout = std::io::stdout();
-
-                                if let Value::Error { error } = item {
-                                    return Err(error);
-                                }
-
-                                let mut out = item.into_string("\n", config);
-                                out.push('\n');
-
-                                match stdout.lock().write_all(out.as_bytes()) {
-                                    Ok(_) => (),
-                                    Err(err) => eprintln!("{}", err),
-                                };
-                            }
+                            print_or_return(table, config)?;
                         }
                         None => {
-                            for item in input {
-                                let stdout = std::io::stdout();
-
-                                if let Value::Error { error } = item {
-                                    return Err(error);
-                                }
-
-                                let mut out = item.into_string("\n", config);
-                                out.push('\n');
-
-                                match stdout.lock().write_all(out.as_bytes()) {
-                                    Ok(_) => (),
-                                    Err(err) => eprintln!("{}", err),
-                                };
-                            }
+                            print_or_return(input, config)?;
                         }
                     };
                 }
@@ -760,6 +819,21 @@ pub fn eval_block(
     Ok(input)
 }
 
+fn print_or_return(pipeline_data: PipelineData, config: &Config) -> Result<(), ShellError> {
+    for item in pipeline_data {
+        if let Value::Error { error } = item {
+            return Err(error);
+        }
+
+        let mut out = item.into_string("\n", config);
+        out.push('\n');
+
+        stdout_write_all_and_flush(out)?;
+    }
+
+    Ok(())
+}
+
 pub fn eval_subexpression(
     engine_state: &EngineState,
     stack: &mut Stack,
@@ -768,7 +842,7 @@ pub fn eval_subexpression(
 ) -> Result<PipelineData, ShellError> {
     for pipeline in block.pipelines.iter() {
         for expr in pipeline.expressions.iter() {
-            input = eval_expression_with_input(engine_state, stack, expr, input, true, false)?
+            input = eval_expression_with_input(engine_state, stack, expr, input, true, false)?.0
         }
     }
 
@@ -779,7 +853,7 @@ fn extract_custom_completion_from_arg(engine_state: &EngineState, shape: &Syntax
     return match shape {
         SyntaxShape::Custom(_, custom_completion_decl_id) => {
             let custom_completion_command = engine_state.get_decl(*custom_completion_decl_id);
-            let custom_completion_command_name: &str = &*custom_completion_command.name();
+            let custom_completion_command_name: &str = custom_completion_command.name();
             custom_completion_command_name.to_string()
         }
         _ => "".to_string(),
@@ -797,21 +871,21 @@ pub fn create_scope(
     let mut vars = vec![];
     let mut commands = vec![];
     let mut aliases = vec![];
-    let mut overlays = vec![];
+    let mut modules = vec![];
 
     let mut vars_map = HashMap::new();
     let mut commands_map = HashMap::new();
     let mut aliases_map = HashMap::new();
-    let mut overlays_map = HashMap::new();
+    let mut modules_map = HashMap::new();
     let mut visibility = Visibility::new();
 
-    for frame in &engine_state.scope {
-        vars_map.extend(&frame.vars);
-        commands_map.extend(&frame.decls);
-        aliases_map.extend(&frame.aliases);
-        overlays_map.extend(&frame.overlays);
+    for overlay_frame in engine_state.active_overlays(&[]) {
+        vars_map.extend(&overlay_frame.vars);
+        commands_map.extend(&overlay_frame.decls);
+        aliases_map.extend(&overlay_frame.aliases);
+        modules_map.extend(&overlay_frame.modules);
 
-        visibility.merge_with(frame.visibility.clone());
+        visibility.merge_with(overlay_frame.visibility.clone());
     }
 
     for var in vars_map {
@@ -832,19 +906,19 @@ pub fn create_scope(
         })
     }
 
-    for (command_name, decl_id) in commands_map {
+    for ((command_name, _), decl_id) in commands_map {
         if visibility.is_decl_id_visible(decl_id) {
             let mut cols = vec![];
             let mut vals = vec![];
 
-            let mut overlay_commands = vec![];
-            for overlay in &overlays_map {
-                let overlay_name = String::from_utf8_lossy(*overlay.0).to_string();
-                let overlay_id = engine_state.find_overlay(*overlay.0);
-                if let Some(overlay_id) = overlay_id {
-                    let overlay = engine_state.get_overlay(overlay_id);
-                    if overlay.has_decl(command_name) {
-                        overlay_commands.push(overlay_name);
+            let mut module_commands = vec![];
+            for module in &modules_map {
+                let module_name = String::from_utf8_lossy(module.0).to_string();
+                let module_id = engine_state.find_module(module.0, &[]);
+                if let Some(module_id) = module_id {
+                    let module = engine_state.get_module(module_id);
+                    if module.has_decl(command_name) {
+                        module_commands.push(module_name);
                     }
                 }
             }
@@ -856,7 +930,7 @@ pub fn create_scope(
             });
 
             cols.push("module_name".into());
-            vals.push(Value::string(overlay_commands.join(", "), span));
+            vals.push(Value::string(module_commands.join(", "), span));
 
             let decl = engine_state.get_decl(*decl_id);
             let signature = decl.signature();
@@ -1032,16 +1106,10 @@ pub fn create_scope(
                 span,
             });
 
-            cols.push("is_binary".to_string());
-            vals.push(Value::Bool {
-                val: decl.is_binary(),
-                span,
-            });
-
             cols.push("is_builtin".to_string());
             // we can only be a is_builtin or is_custom, not both
             vals.push(Value::Bool {
-                val: decl.get_block_id().is_none(),
+                val: !decl.is_custom_command(),
                 span,
             });
 
@@ -1059,7 +1127,7 @@ pub fn create_scope(
 
             cols.push("is_custom".to_string());
             vals.push(Value::Bool {
-                val: decl.get_block_id().is_some(),
+                val: decl.is_custom_command(),
                 span,
             });
 
@@ -1111,7 +1179,7 @@ pub fn create_scope(
                 if !alias_text.is_empty() {
                     alias_text.push(' ');
                 }
-                alias_text.push_str(&String::from_utf8_lossy(contents).to_string());
+                alias_text.push_str(&String::from_utf8_lossy(contents));
             }
             aliases.push((
                 Value::String {
@@ -1123,9 +1191,9 @@ pub fn create_scope(
         }
     }
 
-    for overlay in overlays_map {
-        overlays.push(Value::String {
-            val: String::from_utf8_lossy(overlay.0).to_string(),
+    for module in modules_map {
+        modules.push(Value::String {
+            val: String::from_utf8_lossy(module.0).to_string(),
             span,
         });
     }
@@ -1170,10 +1238,44 @@ pub fn create_scope(
         span,
     });
 
-    overlays.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-    output_cols.push("overlays".to_string());
+    modules.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    output_cols.push("modules".to_string());
     output_vals.push(Value::List {
-        vals: overlays,
+        vals: modules,
+        span,
+    });
+
+    let engine_state_cols = vec![
+        "source_bytes".to_string(),
+        "num_vars".to_string(),
+        "num_commands".to_string(),
+        "num_aliases".to_string(),
+        "num_blocks".to_string(),
+        "num_modules".to_string(),
+        "num_env_vars".to_string(),
+    ];
+
+    let engine_state_vals = vec![
+        Value::int(engine_state.next_span_start() as i64, span),
+        Value::int(engine_state.num_vars() as i64, span),
+        Value::int(engine_state.num_decls() as i64, span),
+        Value::int(engine_state.num_aliases() as i64, span),
+        Value::int(engine_state.num_blocks() as i64, span),
+        Value::int(engine_state.num_modules() as i64, span),
+        Value::int(
+            engine_state
+                .env_vars
+                .values()
+                .map(|overlay| overlay.len() as i64)
+                .sum(),
+            span,
+        ),
+    ];
+
+    output_cols.push("engine_state".to_string());
+    output_vals.push(Value::Record {
+        cols: engine_state_cols,
+        vals: engine_state_vals,
         span,
     });
 
@@ -1199,10 +1301,19 @@ pub fn eval_variable(
             if let Some(mut config_path) = nu_path::config_dir() {
                 config_path.push("nushell");
                 let mut env_config_path = config_path.clone();
+                let mut loginshell_path = config_path.clone();
 
                 let mut history_path = config_path.clone();
 
-                history_path.push("history.txt");
+                match engine_state.config.history_file_format {
+                    HistoryFileFormat::Sqlite => {
+                        history_path.push("history.sqlite3");
+                    }
+                    HistoryFileFormat::PlainText => {
+                        history_path.push("history.txt");
+                    }
+                }
+                // let mut history_path = config_files::get_history_path(); // todo: this should use the get_history_path method but idk where to put that function
 
                 output_cols.push("history-path".into());
                 output_vals.push(Value::String {
@@ -1223,6 +1334,14 @@ pub fn eval_variable(
                 output_cols.push("env-path".into());
                 output_vals.push(Value::String {
                     val: env_config_path.to_string_lossy().to_string(),
+                    span,
+                });
+
+                loginshell_path.push("login.nu");
+
+                output_cols.push("loginshell-path".into());
+                output_vals.push(Value::String {
+                    val: loginshell_path.to_string_lossy().to_string(),
                     span,
                 });
             }
@@ -1341,6 +1460,14 @@ fn compute(size: i64, unit: Unit, span: Span) -> Value {
             val: size * 1000 * 1000 * 1000 * 1000 * 1000,
             span,
         },
+        Unit::Exabyte => Value::Filesize {
+            val: size * 1000 * 1000 * 1000 * 1000 * 1000 * 1000,
+            span,
+        },
+        Unit::Zettabyte => Value::Filesize {
+            val: size * 1000 * 1000 * 1000 * 1000 * 1000 * 1000 * 1000,
+            span,
+        },
 
         Unit::Kibibyte => Value::Filesize {
             val: size * 1024,
@@ -1360,6 +1487,14 @@ fn compute(size: i64, unit: Unit, span: Span) -> Value {
         },
         Unit::Pebibyte => Value::Filesize {
             val: size * 1024 * 1024 * 1024 * 1024 * 1024,
+            span,
+        },
+        Unit::Exbibyte => Value::Filesize {
+            val: size * 1024 * 1024 * 1024 * 1024 * 1024 * 1024,
+            span,
+        },
+        Unit::Zebibyte => Value::Filesize {
+            val: size * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024,
             span,
         },
 
@@ -1388,8 +1523,8 @@ fn compute(size: i64, unit: Unit, span: Span) -> Value {
             Some(val) => Value::Duration { val, span },
             None => Value::Error {
                 error: ShellError::GenericError(
-                    "duration too large".into(),
-                    "duration too large".into(),
+                    "day duration too large".into(),
+                    "day duration too large".into(),
                     Some(span),
                     None,
                     Vec::new(),
@@ -1400,8 +1535,44 @@ fn compute(size: i64, unit: Unit, span: Span) -> Value {
             Some(val) => Value::Duration { val, span },
             None => Value::Error {
                 error: ShellError::GenericError(
-                    "duration too large".into(),
-                    "duration too large".into(),
+                    "week duration too large".into(),
+                    "week duration too large".into(),
+                    Some(span),
+                    None,
+                    Vec::new(),
+                ),
+            },
+        },
+        Unit::Month => match size.checked_mul(1000 * 1000 * 1000 * 60 * 60 * 24 * 30) {
+            Some(val) => Value::Duration { val, span },
+            None => Value::Error {
+                error: ShellError::GenericError(
+                    "month duration too large".into(),
+                    "month duration too large".into(),
+                    Some(span),
+                    None,
+                    Vec::new(),
+                ),
+            },
+        },
+        Unit::Year => match size.checked_mul(1000 * 1000 * 1000 * 60 * 60 * 24 * 365) {
+            Some(val) => Value::Duration { val, span },
+            None => Value::Error {
+                error: ShellError::GenericError(
+                    "year duration too large".into(),
+                    "year duration too large".into(),
+                    Some(span),
+                    None,
+                    Vec::new(),
+                ),
+            },
+        },
+        Unit::Decade => match size.checked_mul(1000 * 1000 * 1000 * 60 * 60 * 24 * 365 * 10) {
+            Some(val) => Value::Duration { val, span },
+            None => Value::Error {
+                error: ShellError::GenericError(
+                    "decade duration too large".into(),
+                    "decade duration too large".into(),
                     Some(span),
                     None,
                     Vec::new(),

@@ -1,6 +1,7 @@
 use nu_engine::documentation::get_flags_section;
 use nu_protocol::{engine::EngineState, levenshtein_distance};
 use reedline::{Completer, Suggestion};
+use std::fmt::Write;
 use std::sync::Arc;
 
 pub struct NuHelpCompleter(Arc<EngineState>);
@@ -19,6 +20,10 @@ impl NuHelpCompleter {
             .filter(|(sig, _, _, _)| {
                 sig.name.to_lowercase().contains(&line.to_lowercase())
                     || sig.usage.to_lowercase().contains(&line.to_lowercase())
+                    || sig
+                        .search_terms
+                        .iter()
+                        .any(|term| term.to_lowercase().contains(&line.to_lowercase()))
                     || sig
                         .extra_usage
                         .to_lowercase()
@@ -49,7 +54,7 @@ impl NuHelpCompleter {
                     long_desc.push_str("\r\n\r\n");
                 }
 
-                long_desc.push_str(&format!("Usage:\r\n  > {}\r\n", sig.call_signature()));
+                let _ = write!(long_desc, "Usage:\r\n  > {}\r\n", sig.call_signature());
 
                 if !sig.named.is_empty() {
                     long_desc.push_str(&get_flags_section(sig))
@@ -61,27 +66,28 @@ impl NuHelpCompleter {
                 {
                     long_desc.push_str("\r\nParameters:\r\n");
                     for positional in &sig.required_positional {
-                        long_desc
-                            .push_str(&format!("  {}: {}\r\n", positional.name, positional.desc));
+                        let _ = write!(long_desc, "  {}: {}\r\n", positional.name, positional.desc);
                     }
                     for positional in &sig.optional_positional {
-                        long_desc.push_str(&format!(
+                        let _ = write!(
+                            long_desc,
                             "  (optional) {}: {}\r\n",
                             positional.name, positional.desc
-                        ));
+                        );
                     }
 
                     if let Some(rest_positional) = &sig.rest_positional {
-                        long_desc.push_str(&format!(
+                        let _ = write!(
+                            long_desc,
                             "  ...{}: {}\r\n",
                             rest_positional.name, rest_positional.desc
-                        ));
+                        );
                     }
                 }
 
                 let extra: Vec<String> = examples
                     .iter()
-                    .map(|example| example.example.to_string())
+                    .map(|example| example.example.replace('\n', "\r\n"))
                     .collect();
 
                 Suggestion {
@@ -92,6 +98,7 @@ impl NuHelpCompleter {
                         start: pos,
                         end: pos + line.len(),
                     },
+                    append_whitespace: false,
                 }
             })
             .collect()

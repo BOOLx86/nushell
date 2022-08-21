@@ -23,10 +23,6 @@ pub trait Command: Send + Sync + CommandClone {
         input: PipelineData,
     ) -> Result<PipelineData, ShellError>;
 
-    fn is_binary(&self) -> bool {
-        false
-    }
-
     fn examples(&self) -> Vec<Example> {
         Vec::new()
     }
@@ -39,6 +35,16 @@ pub trait Command: Send + Sync + CommandClone {
     // This is a signature for a known external command
     fn is_known_external(&self) -> bool {
         false
+    }
+
+    // This is an enhanced method to determine if a command is custom command or not
+    // since extern "foo" [] and def "foo" [] behaves differently
+    fn is_custom_command(&self) -> bool {
+        if self.get_block_id().is_some() {
+            true
+        } else {
+            self.is_known_external()
+        }
     }
 
     // Is a sub command

@@ -3,6 +3,7 @@ use crate::DirInfo;
 use chrono::{DateTime, Local, LocalResult, TimeZone, Utc};
 use nu_engine::env::current_dir;
 use nu_engine::CallExt;
+use nu_glob::MatchOptions;
 use nu_path::expand_to_real_path;
 use nu_protocol::ast::Call;
 use nu_protocol::engine::{Command, EngineState, Stack};
@@ -11,6 +12,7 @@ use nu_protocol::{
     PipelineMetadata, ShellError, Signature, Span, Spanned, SyntaxShape, Value,
 };
 use pathdiff::diff_paths;
+
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -54,6 +56,11 @@ impl Command for Ls {
                 "Display the apparent directory size in place of the directory metadata size",
                 Some('d'),
             )
+            .switch(
+                "directory",
+                "List the specified directory itself instead of its contents",
+                Some('D'),
+            )
             .category(Category::FileSystem)
     }
 
@@ -69,11 +76,26 @@ impl Command for Ls {
         let short_names = call.has_flag("short-names");
         let full_paths = call.has_flag("full-paths");
         let du = call.has_flag("du");
+        let directory = call.has_flag("directory");
         let ctrl_c = engine_state.ctrlc.clone();
         let call_span = call.head;
         let cwd = current_dir(engine_state, stack)?;
 
         let pattern_arg: Option<Spanned<String>> = call.opt(engine_state, stack, 0)?;
+
+        let pattern_arg = {
+            if let Some(path) = pattern_arg {
+                Some(Spanned {
+                    item: match strip_ansi_escapes::strip(&path.item) {
+                        Ok(item) => String::from_utf8(item).unwrap_or(path.item),
+                        Err(_) => path.item,
+                    },
+                    span: path.span,
+                })
+            } else {
+                pattern_arg
+            }
+        };
 
         let (path, p_tag, absolute_path) = match pattern_arg {
             Some(p) => {
@@ -81,7 +103,8 @@ impl Command for Ls {
                 let mut p = expand_to_real_path(p.item);
 
                 let expanded = nu_path::expand_path_with(&p, &cwd);
-                if expanded.is_dir() {
+                // Avoid checking and pushing "*" to the path when directory (do not show contents) flag is true
+                if !directory && expanded.is_dir() {
                     if permission_denied(&p) {
                         #[cfg(unix)]
                         let error_msg = format!(
@@ -114,7 +137,10 @@ impl Command for Ls {
                 (p, p_tag, absolute_path)
             }
             None => {
-                if is_empty_dir(current_dir(engine_state, stack)?) {
+                // Avoid pushing "*" to the default path when directory (do not show contents) flag is true
+                if directory {
+                    (PathBuf::from("."), call_span, false)
+                } else if is_empty_dir(current_dir(engine_state, stack)?) {
                     return Ok(Value::nothing(call_span).into_pipeline_data());
                 } else {
                     (PathBuf::from("./*"), call_span, false)
@@ -128,7 +154,15 @@ impl Command for Ls {
             item: path.display().to_string(),
             span: p_tag,
         };
-        let (prefix, paths) = nu_engine::glob_from(&glob_path, &cwd, call_span)?;
+
+        let glob_options = if all {
+            None
+        } else {
+            let mut glob_options = MatchOptions::new();
+            glob_options.recursive_match_hidden_dir = false;
+            Some(glob_options)
+        };
+        let (prefix, paths) = nu_engine::glob_from(&glob_path, &cwd, call_span, glob_options)?;
 
         let mut paths_peek = paths.peekable();
         if paths_peek.peek().is_none() {
@@ -168,13 +202,30 @@ impl Command for Ls {
                         Some(path.to_string_lossy().to_string())
                     } else if let Some(prefix) = &prefix {
                         if let Ok(remainder) = path.strip_prefix(&prefix) {
-                            let new_prefix = if let Some(pfx) = diff_paths(&prefix, &cwd) {
-                                pfx
-                            } else {
-                                prefix.to_path_buf()
-                            };
+                            if directory {
+                                // When the path is the same as the cwd, path_diff should be "."
+                                let path_diff =
+                                    if let Some(path_diff_not_dot) = diff_paths(&path, &cwd) {
+                                        let path_diff_not_dot = path_diff_not_dot.to_string_lossy();
+                                        if path_diff_not_dot.is_empty() {
+                                            ".".to_string()
+                                        } else {
+                                            path_diff_not_dot.to_string()
+                                        }
+                                    } else {
+                                        path.to_string_lossy().to_string()
+                                    };
 
-                            Some(new_prefix.join(remainder).to_string_lossy().to_string())
+                                Some(path_diff)
+                            } else {
+                                let new_prefix = if let Some(pfx) = diff_paths(&prefix, &cwd) {
+                                    pfx
+                                } else {
+                                    prefix.to_path_buf()
+                                };
+
+                                Some(new_prefix.join(remainder).to_string_lossy().to_string())
+                            }
                         } else {
                             Some(path.to_string_lossy().to_string())
                         }
@@ -258,6 +309,12 @@ impl Command for Ls {
                 example: "ls -s ~ | where type == dir && modified < ((date now) - 7day)",
                 result: None,
             },
+            Example {
+                description: "List given paths, show directories themselves",
+                example:
+                    "['/path/to/directory' '/path/to/file'] | each { |it| ls -D $it } | flatten",
+                result: None,
+            },
         ]
     }
 }
@@ -300,11 +357,7 @@ fn is_hidden_dir(dir: impl AsRef<Path>) -> bool {
 }
 
 fn path_contains_hidden_folder(path: &Path, folders: &[PathBuf]) -> bool {
-    let path_str = path.to_str().expect("failed to read path");
-    if folders
-        .iter()
-        .any(|p| path_str.starts_with(&p.to_str().expect("failed to read hidden paths")))
-    {
+    if folders.iter().any(|p| path.starts_with(p.as_path())) {
         return true;
     }
     false
@@ -351,8 +404,14 @@ pub(crate) fn dir_entry_dict(
     du: bool,
     ctrl_c: Option<Arc<AtomicBool>>,
 ) -> Result<Value, ShellError> {
+    #[cfg(windows)]
+    if metadata.is_none() {
+        return windows_helper::dir_entry_dict_windows_fallback(filename, display_name, span, long);
+    }
+
     let mut cols = vec![];
     let mut vals = vec![];
+    let mut file_type = "unknown";
 
     cols.push("name".into());
     vals.push(Value::String {
@@ -361,9 +420,10 @@ pub(crate) fn dir_entry_dict(
     });
 
     if let Some(md) = metadata {
+        file_type = get_file_type(md);
         cols.push("type".into());
         vals.push(Value::String {
-            val: get_file_type(md).to_string(),
+            val: file_type.to_string(),
             span,
         });
     } else {
@@ -449,6 +509,11 @@ pub(crate) fn dir_entry_dict(
 
     cols.push("size".to_string());
     if let Some(md) = metadata {
+        let zero_sized = file_type == "pipe"
+            || file_type == "socket"
+            || file_type == "char device"
+            || file_type == "block device";
+
         if md.is_dir() {
             if du {
                 let params = DirBuilder::new(Span { start: 0, end: 2 }, None, false, None, false);
@@ -481,7 +546,12 @@ pub(crate) fn dir_entry_dict(
                 vals.push(Value::nothing(span));
             }
         } else {
-            vals.push(Value::nothing(span));
+            let value = if zero_sized {
+                Value::Filesize { val: 0, span }
+            } else {
+                Value::nothing(span)
+            };
+            vals.push(value);
         }
     } else {
         vals.push(Value::nothing(span));
@@ -547,6 +617,8 @@ pub(crate) fn dir_entry_dict(
     Ok(Value::Record { cols, vals, span })
 }
 
+// TODO: can we get away from local times in `ls`? internals might be cleaner if we worked in UTC
+// and left the conversion to local time to the display layer
 fn try_convert_to_local_date_time(t: SystemTime) -> Option<DateTime<Local>> {
     // Adapted from https://github.com/chronotope/chrono/blob/v0.4.19/src/datetime.rs#L755-L767.
     let (sec, nsec) = match t.duration_since(UNIX_EPOCH) {
@@ -566,5 +638,197 @@ fn try_convert_to_local_date_time(t: SystemTime) -> Option<DateTime<Local>> {
     match Utc.timestamp_opt(sec, nsec) {
         LocalResult::Single(t) => Some(t.with_timezone(&Local)),
         _ => None,
+    }
+}
+
+// #[cfg(windows)] is just to make Clippy happy, remove if you ever want to use this on other platforms
+#[cfg(windows)]
+fn unix_time_to_local_date_time(secs: i64) -> Option<DateTime<Local>> {
+    match Utc.timestamp_opt(secs, 0) {
+        LocalResult::Single(t) => Some(t.with_timezone(&Local)),
+        _ => None,
+    }
+}
+
+#[cfg(windows)]
+mod windows_helper {
+    use super::*;
+
+    use std::mem::MaybeUninit;
+    use std::os::windows::prelude::OsStrExt;
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::Storage::FileSystem::{
+        FindFirstFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY,
+        FILE_ATTRIBUTE_REPARSE_POINT, WIN32_FIND_DATAW,
+    };
+    use windows::Win32::System::SystemServices::{
+        IO_REPARSE_TAG_MOUNT_POINT, IO_REPARSE_TAG_SYMLINK,
+    };
+
+    /// A secondary way to get file info on Windows, for when std::fs::symlink_metadata() fails.
+    /// dir_entry_dict depends on metadata, but that can't be retrieved for some Windows system files:
+    /// https://github.com/rust-lang/rust/issues/96980
+    pub fn dir_entry_dict_windows_fallback(
+        filename: &Path,
+        display_name: &str,
+        span: Span,
+        long: bool,
+    ) -> Result<Value, ShellError> {
+        let mut cols = vec![];
+        let mut vals = vec![];
+
+        cols.push("name".into());
+        vals.push(Value::String {
+            val: display_name.to_string(),
+            span,
+        });
+
+        let find_data = find_first_file(filename, span)?;
+
+        cols.push("type".into());
+        vals.push(Value::String {
+            val: get_file_type_windows_fallback(&find_data),
+            span,
+        });
+
+        if long {
+            cols.push("target".into());
+            if is_symlink(&find_data) {
+                if let Ok(path_to_link) = filename.read_link() {
+                    vals.push(Value::String {
+                        val: path_to_link.to_string_lossy().to_string(),
+                        span,
+                    });
+                } else {
+                    vals.push(Value::String {
+                        val: "Could not obtain target file's path".to_string(),
+                        span,
+                    });
+                }
+            } else {
+                vals.push(Value::nothing(span));
+            }
+
+            cols.push("readonly".into());
+            vals.push(Value::Bool {
+                val: (find_data.dwFileAttributes & FILE_ATTRIBUTE_READONLY.0 != 0),
+                span,
+            });
+        }
+
+        cols.push("size".to_string());
+        let file_size = (find_data.nFileSizeHigh as u64) << 32 | find_data.nFileSizeLow as u64;
+        vals.push(Value::Filesize {
+            val: file_size as i64,
+            span,
+        });
+
+        if long {
+            cols.push("created".to_string());
+            {
+                let mut val = Value::nothing(span);
+                let seconds_since_unix_epoch = unix_time_from_filetime(&find_data.ftCreationTime);
+                if let Some(local) = unix_time_to_local_date_time(seconds_since_unix_epoch) {
+                    val = Value::Date {
+                        val: local.with_timezone(local.offset()),
+                        span,
+                    };
+                }
+                vals.push(val);
+            }
+
+            cols.push("accessed".to_string());
+            {
+                let mut val = Value::nothing(span);
+                let seconds_since_unix_epoch = unix_time_from_filetime(&find_data.ftLastAccessTime);
+                if let Some(local) = unix_time_to_local_date_time(seconds_since_unix_epoch) {
+                    val = Value::Date {
+                        val: local.with_timezone(local.offset()),
+                        span,
+                    };
+                }
+                vals.push(val);
+            }
+        }
+
+        cols.push("modified".to_string());
+        {
+            let mut val = Value::nothing(span);
+            let seconds_since_unix_epoch = unix_time_from_filetime(&find_data.ftLastWriteTime);
+            if let Some(local) = unix_time_to_local_date_time(seconds_since_unix_epoch) {
+                val = Value::Date {
+                    val: local.with_timezone(local.offset()),
+                    span,
+                };
+            }
+            vals.push(val);
+        }
+
+        Ok(Value::Record { cols, vals, span })
+    }
+
+    fn unix_time_from_filetime(ft: &FILETIME) -> i64 {
+        /// January 1, 1970 as Windows file time
+        const EPOCH_AS_FILETIME: u64 = 116444736000000000;
+        const HUNDREDS_OF_NANOSECONDS: u64 = 10000000;
+
+        let time_u64 = ((ft.dwHighDateTime as u64) << 32) | (ft.dwLowDateTime as u64);
+        let rel_to_linux_epoch = time_u64 - EPOCH_AS_FILETIME;
+        let seconds_since_unix_epoch = rel_to_linux_epoch / HUNDREDS_OF_NANOSECONDS;
+
+        seconds_since_unix_epoch as i64
+    }
+
+    // wrapper around the FindFirstFileW Win32 API
+    fn find_first_file(filename: &Path, span: Span) -> Result<WIN32_FIND_DATAW, ShellError> {
+        unsafe {
+            let mut find_data = MaybeUninit::<WIN32_FIND_DATAW>::uninit();
+            // The windows crate really needs a nicer way to do string conversions
+            let filename_wide: Vec<u16> = filename
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+
+            if FindFirstFileW(
+                windows::core::PCWSTR(filename_wide.as_ptr()),
+                find_data.as_mut_ptr(),
+            )
+            .is_err()
+            {
+                return Err(ShellError::ReadingFile(
+                    "Could not read file metadata".to_string(),
+                    span,
+                ));
+            }
+
+            let find_data = find_data.assume_init();
+            Ok(find_data)
+        }
+    }
+
+    fn get_file_type_windows_fallback(find_data: &WIN32_FIND_DATAW) -> String {
+        if find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
+            return "dir".to_string();
+        }
+
+        if is_symlink(find_data) {
+            return "symlink".to_string();
+        }
+
+        "file".to_string()
+    }
+
+    fn is_symlink(find_data: &WIN32_FIND_DATAW) -> bool {
+        if find_data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
+            // Follow Golang's lead in treating mount points as symlinks.
+            // https://github.com/golang/go/blob/016d7552138077741a9c3fdadc73c0179f5d3ff7/src/os/types_windows.go#L104-L105
+            if find_data.dwReserved0 == IO_REPARSE_TAG_SYMLINK
+                || find_data.dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT
+            {
+                return true;
+            }
+        }
+        false
     }
 }

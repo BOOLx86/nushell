@@ -7,7 +7,7 @@ use polars::chunked_array::object::builder::ObjectChunkedBuilder;
 use polars::chunked_array::ChunkedArray;
 use polars::prelude::{
     DataFrame, DataType, DatetimeChunked, Int64Type, IntoSeries, NamedFrom, NewChunkedArray,
-    ObjectType, Series, TimeUnit,
+    ObjectType, Series, TemporalMethods, TimeUnit,
 };
 use std::ops::{Deref, DerefMut};
 
@@ -34,10 +34,6 @@ impl Column {
     pub fn name(&self) -> &str {
         self.name.as_str()
     }
-
-    //pub fn iter(&self) -> impl Iterator<Item = &Value> {
-    //    self.values.iter()
-    //}
 }
 
 impl IntoIterator for Column {
@@ -72,6 +68,7 @@ pub enum InputType {
     Object,
     Date,
     Duration,
+    Filesize,
 }
 
 #[derive(Debug)]
@@ -558,6 +555,12 @@ pub fn add_separator(values: &mut Vec<Value>, df: &DataFrame, span: Span) {
     let mut cols = vec![];
     let mut vals = vec![];
 
+    cols.push("index".to_string());
+    vals.push(Value::String {
+        val: "...".into(),
+        span,
+    });
+
     for name in df.get_column_names() {
         cols.push(name.to_string());
         vals.push(Value::String {
@@ -616,6 +619,9 @@ pub fn insert_value(
             Value::Duration { .. } => {
                 col_val.column_type = Some(InputType::Duration);
             }
+            Value::Filesize { .. } => {
+                col_val.column_type = Some(InputType::Filesize);
+            }
             _ => col_val.column_type = Some(InputType::Object),
         }
         col_val.values.push(value);
@@ -628,6 +634,7 @@ pub fn insert_value(
             | (Value::String { .. }, Value::String { .. })
             | (Value::Bool { .. }, Value::Bool { .. })
             | (Value::Date { .. }, Value::Date { .. })
+            | (Value::Filesize { .. }, Value::Filesize { .. })
             | (Value::Duration { .. }, Value::Duration { .. }) => col_val.values.push(value),
             _ => {
                 col_val.column_type = Some(InputType::Object);
@@ -654,6 +661,12 @@ pub fn from_parsed_columns(column_values: ColumnMap) -> Result<NuDataFrame, Shel
                     df_series.push(series)
                 }
                 InputType::Integer => {
+                    let series_values: Result<Vec<_>, _> =
+                        column.values.iter().map(|v| v.as_i64()).collect();
+                    let series = Series::new(&name, series_values?);
+                    df_series.push(series)
+                }
+                InputType::Filesize => {
                     let series_values: Result<Vec<_>, _> =
                         column.values.iter().map(|v| v.as_i64()).collect();
                     let series = Series::new(&name, series_values?);
@@ -698,24 +711,17 @@ pub fn from_parsed_columns(column_values: ColumnMap) -> Result<NuDataFrame, Shel
                     df_series.push(res.into_series())
                 }
                 InputType::Duration => {
-                    let it = column.values.iter().map(|v| {
-                        if let Value::Duration { val, .. } = &v {
-                            Some(*val)
-                        } else {
-                            None
-                        }
-                    });
-
-                    let res = ChunkedArray::<Int64Type>::from_iter_options(&name, it);
-
-                    df_series.push(res.into_series())
+                    let series_values: Result<Vec<_>, _> =
+                        column.values.iter().map(|v| v.as_i64()).collect();
+                    let series = Series::new(&name, series_values?);
+                    df_series.push(series)
                 }
             }
         }
     }
 
     DataFrame::new(df_series)
-        .map(NuDataFrame::new)
+        .map(|df| NuDataFrame::new(false, df))
         .map_err(|e| {
             ShellError::GenericError(
                 "Error creating dataframe".into(),

@@ -1,5 +1,7 @@
 mod call;
+mod call_input;
 mod plugin_call;
+mod plugin_data;
 mod signature;
 mod value;
 
@@ -7,10 +9,14 @@ use nu_protocol::ShellError;
 
 use crate::{plugin::PluginEncoder, protocol::PluginResponse};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CapnpSerializer;
 
 impl PluginEncoder for CapnpSerializer {
+    fn name(&self) -> &str {
+        "Capnp Serializer"
+    }
+
     fn encode_call(
         &self,
         plugin_call: &crate::protocol::PluginCall,

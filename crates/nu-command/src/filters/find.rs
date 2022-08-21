@@ -1,11 +1,16 @@
-use nu_engine::{eval_block, CallExt};
+use crate::help::highlight_search_string;
+use fancy_regex::Regex;
+use lscolors::Style as LsColors_Style;
+use nu_ansi_term::{Color::Default, Style};
+use nu_color_config::get_color_config;
+use nu_engine::{env_to_string, eval_block, CallExt};
 use nu_protocol::{
     ast::Call,
     engine::{CaptureBlock, Command, EngineState, Stack},
-    Category, Example, IntoInterruptiblePipelineData, PipelineData, ShellError, Signature, Span,
-    SyntaxShape, Value,
+    Category, Example, IntoInterruptiblePipelineData, ListStream, PipelineData, ShellError,
+    Signature, Span, SyntaxShape, Value,
 };
-use regex::Regex;
+use nu_utils::get_ls_colors;
 
 #[derive(Clone)]
 pub struct Find;
@@ -130,6 +135,10 @@ impl Command for Find {
         ]
     }
 
+    fn search_terms(&self) -> Vec<&str> {
+        vec!["filter", "regex", "search", "condition"]
+    }
+
     fn run(
         &self,
         engine_state: &EngineState,
@@ -145,7 +154,7 @@ impl Command for Find {
                 find_with_predicate(predicate, engine_state, stack, call, input)
             }
             (Some(regex), None) => find_with_regex(regex, engine_state, stack, call, input),
-            (None, None) => find_with_rest(engine_state, stack, call, input),
+            (None, None) => find_with_rest_and_highlight(engine_state, stack, call, input),
             (Some(_), Some(_)) => Err(ShellError::IncompatibleParametersSingle(
                 "expected either predicate or regex flag, not both".to_owned(),
                 call.head,
@@ -181,25 +190,33 @@ fn find_with_regex(
         (true, true, true) => "(?ims)",
     };
 
-    let regex = flags.to_string() + &regex;
+    let regex = flags.to_string() + regex.as_str();
 
     let re = Regex::new(regex.as_str())
         .map_err(|e| ShellError::UnsupportedInput(format!("incorrect regex: {}", e), span))?;
 
     input.filter(
         move |value| match value {
-            Value::String { val, .. } => re.is_match(val.as_str()) != invert,
+            Value::String { val, .. } => re.is_match(val.as_str()).unwrap_or(false) != invert,
             Value::Record { cols: _, vals, .. } => {
                 let matches: Vec<bool> = vals
                     .iter()
-                    .map(|v| re.is_match(v.into_string(" ", &config).as_str()) != invert)
+                    .map(|v| {
+                        re.is_match(v.into_string(" ", &config).as_str())
+                            .unwrap_or(false)
+                            != invert
+                    })
                     .collect();
                 matches.iter().any(|b| *b)
             }
             Value::List { vals, .. } => {
                 let matches: Vec<bool> = vals
                     .iter()
-                    .map(|v| re.is_match(v.into_string(" ", &config).as_str()) != invert)
+                    .map(|v| {
+                        re.is_match(v.into_string(" ", &config).as_str())
+                            .unwrap_or(false)
+                            != invert
+                    })
                     .collect();
                 matches.iter().any(|b| *b)
             }
@@ -261,7 +278,7 @@ fn find_with_predicate(
     )
 }
 
-fn find_with_rest(
+fn find_with_rest_and_highlight(
     engine_state: &EngineState,
     stack: &mut Stack,
     call: &Call,
@@ -269,11 +286,10 @@ fn find_with_rest(
 ) -> Result<PipelineData, ShellError> {
     let span = call.head;
     let ctrlc = engine_state.ctrlc.clone();
-    let metadata = input.metadata();
     let engine_state = engine_state.clone();
     let config = engine_state.get_config().clone();
+    let filter_config = engine_state.get_config().clone();
     let invert = call.has_flag("invert");
-
     let terms = call.rest::<Value>(&engine_state, stack, 0)?;
     let lower_terms = terms
         .iter()
@@ -286,56 +302,236 @@ fn find_with_rest(
         })
         .collect::<Vec<Value>>();
 
-    let pipe = input.filter(
-        move |value| {
-            let lower_value = if let Ok(span) = value.span() {
-                Value::string(value.into_string("", &config).to_lowercase(), span)
-            } else {
-                value.clone()
-            };
+    let color_hm = get_color_config(&config);
+    let default_style = Style::new().fg(Default).on(Default);
+    let string_style = match color_hm.get("string") {
+        Some(style) => *style,
+        None => default_style,
+    };
+    let ls_colors_env_str = match stack.get_env_var(&engine_state, "LS_COLORS") {
+        Some(v) => Some(env_to_string("LS_COLORS", &v, &engine_state, stack)?),
+        None => None,
+    };
+    let ls_colors = get_ls_colors(ls_colors_env_str);
 
-            lower_terms.iter().any(|term| match value {
-                Value::Bool { .. }
-                | Value::Int { .. }
-                | Value::Filesize { .. }
-                | Value::Duration { .. }
-                | Value::Date { .. }
-                | Value::Range { .. }
-                | Value::Float { .. }
-                | Value::Block { .. }
-                | Value::Nothing { .. }
-                | Value::Error { .. } => lower_value
-                    .eq(span, term, span)
-                    .map_or(false, |value| value.is_true()),
-                Value::String { .. }
-                | Value::List { .. }
-                | Value::CellPath { .. }
-                | Value::CustomValue { .. } => term
-                    .r#in(span, &lower_value, span)
-                    .map_or(false, |value| value.is_true()),
-                Value::Record { vals, .. } => vals.iter().any(|val| {
-                    if let Ok(span) = val.span() {
-                        let lower_val = Value::string(
-                            val.into_string("", &config).to_lowercase(),
-                            Span::test_data(),
-                        );
+    match input {
+        PipelineData::Value(_, _) => input.filter(
+            move |value| {
+                let lower_value = if let Ok(span) = value.span() {
+                    Value::string(value.into_string("", &config).to_lowercase(), span)
+                } else {
+                    value.clone()
+                };
 
-                        term.r#in(span, &lower_val, span)
-                            .map_or(false, |value| value.is_true())
-                    } else {
-                        term.r#in(span, val, span)
-                            .map_or(false, |value| value.is_true())
+                lower_terms.iter().any(|term| match value {
+                    Value::Bool { .. }
+                    | Value::Int { .. }
+                    | Value::Filesize { .. }
+                    | Value::Duration { .. }
+                    | Value::Date { .. }
+                    | Value::Range { .. }
+                    | Value::Float { .. }
+                    | Value::Block { .. }
+                    | Value::Nothing { .. }
+                    | Value::Error { .. } => lower_value
+                        .eq(span, term, span)
+                        .map_or(false, |val| val.is_true()),
+                    Value::String { .. }
+                    | Value::List { .. }
+                    | Value::CellPath { .. }
+                    | Value::CustomValue { .. } => term
+                        .r#in(span, &lower_value, span)
+                        .map_or(false, |val| val.is_true()),
+                    Value::Record { vals, .. } => vals.iter().any(|val| {
+                        if let Ok(span) = val.span() {
+                            let lower_val = Value::string(
+                                val.into_string("", &config).to_lowercase(),
+                                Span::test_data(),
+                            );
+
+                            term.r#in(span, &lower_val, span)
+                                .map_or(false, |aval| aval.is_true())
+                        } else {
+                            term.r#in(span, val, span)
+                                .map_or(false, |aval| aval.is_true())
+                        }
+                    }),
+                    Value::Binary { .. } => false,
+                }) != invert
+            },
+            ctrlc,
+        ),
+        PipelineData::ListStream(stream, meta) => {
+            Ok(ListStream::from_stream(
+                stream
+                    .map(move |(mut x, _)| match &mut x {
+                        Value::Record { cols, vals, span } => {
+                            let mut output = vec![];
+                            for val in vals {
+                                let val_str = val.into_string("", &config);
+                                let lower_val = val.into_string("", &config).to_lowercase();
+                                let mut term_added_to_output = false;
+                                for term in terms.clone() {
+                                    let term_str = term.into_string("", &config);
+                                    let lower_term = term.into_string("", &config).to_lowercase();
+                                    if lower_val.contains(&lower_term) {
+                                        if config.use_ls_colors {
+                                            // Get the original LS_COLORS color
+                                            let style = ls_colors.style_for_path(val_str.clone());
+                                            let ansi_style = style
+                                                .map(LsColors_Style::to_crossterm_style)
+                                                .unwrap_or_default();
+
+                                            let ls_colored_val =
+                                                ansi_style.apply(&val_str).to_string();
+                                            let hi = match highlight_search_string(
+                                                &ls_colored_val,
+                                                &term_str,
+                                                &string_style,
+                                            ) {
+                                                Ok(hi) => hi,
+                                                Err(_) => string_style
+                                                    .paint(term_str.to_string())
+                                                    .to_string(),
+                                            };
+                                            output.push(Value::String {
+                                                val: hi,
+                                                span: *span,
+                                            });
+                                            term_added_to_output = true;
+                                        } else {
+                                            // No LS_COLORS support, so just use the original value
+                                            let hi = match highlight_search_string(
+                                                &val_str,
+                                                &term_str,
+                                                &string_style,
+                                            ) {
+                                                Ok(hi) => hi,
+                                                Err(_) => string_style
+                                                    .paint(term_str.to_string())
+                                                    .to_string(),
+                                            };
+                                            output.push(Value::String {
+                                                val: hi,
+                                                span: *span,
+                                            });
+                                        }
+                                    }
+                                }
+                                if !term_added_to_output {
+                                    output.push(val.clone());
+                                }
+                            }
+                            Value::Record {
+                                cols: cols.to_vec(),
+                                vals: output,
+                                span: *span,
+                            }
+                        }
+                        _ => x,
+                    })
+                    .filter(move |value| {
+                        let lower_value = if let Ok(span) = value.span() {
+                            Value::string(
+                                value.into_string("", &filter_config).to_lowercase(),
+                                span,
+                            )
+                        } else {
+                            value.clone()
+                        };
+
+                        lower_terms.iter().any(|term| match value {
+                            Value::Bool { .. }
+                            | Value::Int { .. }
+                            | Value::Filesize { .. }
+                            | Value::Duration { .. }
+                            | Value::Date { .. }
+                            | Value::Range { .. }
+                            | Value::Float { .. }
+                            | Value::Block { .. }
+                            | Value::Nothing { .. }
+                            | Value::Error { .. } => lower_value
+                                .eq(span, term, span)
+                                .map_or(false, |value| value.is_true()),
+                            Value::String { .. }
+                            | Value::List { .. }
+                            | Value::CellPath { .. }
+                            | Value::CustomValue { .. } => term
+                                .r#in(span, &lower_value, span)
+                                .map_or(false, |value| value.is_true()),
+                            Value::Record { vals, .. } => vals.iter().any(|val| {
+                                if let Ok(span) = val.span() {
+                                    let lower_val = Value::string(
+                                        val.into_string("", &filter_config).to_lowercase(),
+                                        Span::test_data(),
+                                    );
+
+                                    term.r#in(span, &lower_val, span)
+                                        .map_or(false, |value| value.is_true())
+                                } else {
+                                    term.r#in(span, val, span)
+                                        .map_or(false, |value| value.is_true())
+                                }
+                            }),
+                            Value::Binary { .. } => false,
+                        }) != invert
+                    }),
+                ctrlc.clone(),
+            )
+            .into_pipeline_data(ctrlc)
+            .set_metadata(meta))
+        }
+        PipelineData::ExternalStream { stdout: None, .. } => Ok(PipelineData::new(span)),
+        PipelineData::ExternalStream {
+            stdout: Some(stream),
+            ..
+        } => {
+            let mut output: Vec<Value> = vec![];
+            for filter_val in stream {
+                match filter_val {
+                    Ok(value) => match value {
+                        Value::String { val, span } => {
+                            let split_char = if val.contains("\r\n") { "\r\n" } else { "\n" };
+
+                            for line in val.split(split_char) {
+                                for term in lower_terms.iter() {
+                                    let term_str = term.into_string("", &filter_config);
+                                    let lower_val = line.to_lowercase();
+                                    if lower_val
+                                        .contains(&term.into_string("", &config).to_lowercase())
+                                    {
+                                        output.push(Value::String {
+                                            val: highlight_search_string(
+                                                line,
+                                                &term_str,
+                                                &string_style,
+                                            )?,
+                                            span,
+                                        })
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            return Err(ShellError::UnsupportedInput(
+                                format!(
+                                    "Unsupport value type '{}' from raw stream",
+                                    value.get_type()
+                                ),
+                                span,
+                            ))
+                        }
+                    },
+                    _ => {
+                        return Err(ShellError::UnsupportedInput(
+                            "Unsupport type from raw stream".to_string(),
+                            span,
+                        ))
                     }
-                }),
-                Value::Binary { .. } => false,
-            }) != invert
-        },
-        ctrlc,
-    )?;
-
-    match metadata {
-        Some(m) => Ok(pipe.into_pipeline_data_with_metadata(m, engine_state.ctrlc.clone())),
-        None => Ok(pipe),
+                };
+            }
+            Ok(output.into_pipeline_data(ctrlc))
+        }
     }
 }
 

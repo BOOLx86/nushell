@@ -3,15 +3,17 @@ use super::super::values::{Column, NuDataFrame};
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, Type, Value,
 };
+
+use polars::prelude::SeriesMethods;
 
 #[derive(Clone)]
 pub struct ValueCount;
 
 impl Command for ValueCount {
     fn name(&self) -> &str {
-        "dfr value-counts"
+        "value-counts"
     }
 
     fn usage(&self) -> &str {
@@ -19,13 +21,16 @@ impl Command for ValueCount {
     }
 
     fn signature(&self) -> Signature {
-        Signature::build(self.name()).category(Category::Custom("dataframe".into()))
+        Signature::build(self.name())
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
+            .category(Category::Custom("dataframe".into()))
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
             description: "Calculates value counts",
-            example: "[5 5 5 5 6 6] | dfr to-df | dfr value-counts",
+            example: "[5 5 5 5 6 6] | into df | value-counts",
             result: Some(
                 NuDataFrame::try_from_columns(vec![
                     Column::new(
@@ -63,7 +68,7 @@ fn command(
     let df = NuDataFrame::try_from_pipeline(input, call.head)?;
     let series = df.as_series(call.head)?;
 
-    let res = series.value_counts().map_err(|e| {
+    let res = series.value_counts(false, false).map_err(|e| {
         ShellError::GenericError(
             "Error calculating value counts values".into(),
             e.to_string(),

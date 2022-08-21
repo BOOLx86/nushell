@@ -4,9 +4,10 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, Spanned, SyntaxShape, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, Spanned, SyntaxShape, Type,
+    Value,
 };
-use polars::prelude::{DataType, IntoSeries, RollingOptions};
+use polars::prelude::{DataType, Duration, IntoSeries, RollingOptionsImpl, SeriesOpsTime};
 
 enum RollType {
     Min,
@@ -47,7 +48,7 @@ pub struct Rolling;
 
 impl Command for Rolling {
     fn name(&self) -> &str {
-        "dfr rolling"
+        "rolling"
     }
 
     fn usage(&self) -> &str {
@@ -58,6 +59,8 @@ impl Command for Rolling {
         Signature::build(self.name())
             .required("type", SyntaxShape::String, "rolling operation")
             .required("window", SyntaxShape::Int, "Window size for rolling")
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
             .category(Category::Custom("dataframe".into()))
     }
 
@@ -65,7 +68,7 @@ impl Command for Rolling {
         vec![
             Example {
                 description: "Rolling sum for a series",
-                example: "[1 2 3 4 5] | dfr to-df | dfr rolling sum 2 | dfr drop-nulls",
+                example: "[1 2 3 4 5] | into df | rolling sum 2 | drop-nulls",
                 result: Some(
                     NuDataFrame::try_from_columns(vec![Column::new(
                         "0_rolling_sum".to_string(),
@@ -82,7 +85,7 @@ impl Command for Rolling {
             },
             Example {
                 description: "Rolling max for a series",
-                example: "[1 2 3 4 5] | dfr to-df | dfr rolling max 2 | dfr drop-nulls",
+                example: "[1 2 3 4 5] | into df | rolling max 2 | drop-nulls",
                 result: Some(
                     NuDataFrame::try_from_columns(vec![Column::new(
                         "0_rolling_max".to_string(),
@@ -118,7 +121,7 @@ fn command(
     input: PipelineData,
 ) -> Result<PipelineData, ShellError> {
     let roll_type: Spanned<String> = call.req(engine_state, stack, 0)?;
-    let window_size: usize = call.req(engine_state, stack, 1)?;
+    let window_size: i64 = call.req(engine_state, stack, 1)?;
 
     let df = NuDataFrame::try_from_pipeline(input, call.head)?;
     let series = df.as_series(call.head)?;
@@ -135,11 +138,14 @@ fn command(
 
     let roll_type = RollType::from_str(&roll_type.item, roll_type.span)?;
 
-    let rolling_opts = RollingOptions {
-        window_size,
-        min_periods: window_size,
+    let rolling_opts = RollingOptionsImpl {
+        window_size: Duration::new(window_size),
+        min_periods: window_size as usize,
         weights: None,
         center: false,
+        by: None,
+        closed_window: None,
+        tu: None,
     };
     let res = match roll_type {
         RollType::Max => series.rolling_max(rolling_opts),

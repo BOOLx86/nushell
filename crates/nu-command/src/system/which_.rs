@@ -32,6 +32,10 @@ impl Command for Which {
         "Finds a program file, alias or custom command."
     }
 
+    fn search_terms(&self) -> Vec<&str> {
+        vec!["find", "path", "location", "command"]
+    }
+
     fn run(
         &self,
         engine_state: &EngineState,
@@ -69,7 +73,7 @@ fn entry(arg: impl Into<String>, path: impl Into<String>, builtin: bool, span: S
 }
 
 fn get_entry_in_aliases(engine_state: &EngineState, name: &str, span: Span) -> Option<Value> {
-    if let Some(alias_id) = engine_state.find_alias(name.as_bytes()) {
+    if let Some(alias_id) = engine_state.find_alias(name.as_bytes(), &[]) {
         let alias = engine_state.get_alias(alias_id);
         let alias_str = alias
             .iter()
@@ -90,8 +94,8 @@ fn get_entry_in_aliases(engine_state: &EngineState, name: &str, span: Span) -> O
 }
 
 fn get_entry_in_commands(engine_state: &EngineState, name: &str, span: Span) -> Option<Value> {
-    if let Some(decl_id) = engine_state.find_decl(name.as_bytes()) {
-        let (msg, is_builtin) = if engine_state.get_decl(decl_id).get_block_id().is_some() {
+    if let Some(decl_id) = engine_state.find_decl(name.as_bytes(), &[]) {
+        let (msg, is_builtin) = if engine_state.get_decl(decl_id).is_custom_command() {
             ("Nushell custom command", false)
         } else {
             ("Nushell built-in command", true)

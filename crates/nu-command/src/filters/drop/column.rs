@@ -57,11 +57,18 @@ impl Command for DropColumn {
             description: "Remove the last column of a table",
             example: "echo [[lib, extension]; [nu-lib, rs] [nu-core, rb]] | drop column",
             result: Some(Value::List {
-                vals: vec![Value::Record {
-                    cols: vec!["lib".into()],
-                    vals: vec![Value::test_string("nu-lib"), Value::test_string("nu-core")],
-                    span: Span::test_data(),
-                }],
+                vals: vec![
+                    Value::Record {
+                        cols: vec!["lib".into()],
+                        vals: vec![Value::test_string("nu-lib")],
+                        span: Span::test_data(),
+                    },
+                    Value::Record {
+                        cols: vec!["lib".into()],
+                        vals: vec![Value::test_string("nu-core")],
+                        span: Span::test_data(),
+                    },
+                ],
                 span: Span::test_data(),
             }),
         }]
@@ -94,7 +101,7 @@ fn dropcol(
                 let mut vals = vec![];
 
                 for path in &keep_columns {
-                    let fetcher = input_val.clone().follow_cell_path(&path.members)?;
+                    let fetcher = input_val.clone().follow_cell_path(&path.members, false)?;
                     cols.push(path.into_string());
                     vals.push(fetcher);
                 }
@@ -108,7 +115,7 @@ fn dropcol(
         PipelineData::ListStream(stream, ..) => {
             let mut output = vec![];
 
-            let v: Vec<_> = stream.into_iter().collect();
+            let v: Vec<_> = stream.into_iter().map(|(v, _)| v).collect();
             let input_cols = get_input_cols(v.clone());
             let kc = get_keep_columns(input_cols, columns);
             keep_columns = get_cellpath_columns(kc, span);
@@ -118,7 +125,7 @@ fn dropcol(
                 let mut vals = vec![];
 
                 for path in &keep_columns {
-                    let fetcher = input_val.clone().follow_cell_path(&path.members)?;
+                    let fetcher = input_val.clone().follow_cell_path(&path.members, false)?;
                     cols.push(path.into_string());
                     vals.push(fetcher);
                 }
@@ -134,7 +141,7 @@ fn dropcol(
             let mut vals = vec![];
 
             for cell_path in &keep_columns {
-                let result = v.clone().follow_cell_path(&cell_path.members)?;
+                let result = v.clone().follow_cell_path(&cell_path.members, false)?;
 
                 cols.push(cell_path.into_string());
                 vals.push(result);
@@ -179,4 +186,14 @@ fn get_keep_columns(input: Vec<String>, mut num_of_columns_to_drop: i64) -> Vec<
 
     let num_of_columns_to_keep = (vlen - num_of_columns_to_drop) as usize;
     input[0..num_of_columns_to_keep].to_vec()
+}
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn test_examples() {
+        use super::DropColumn;
+        use crate::test_examples;
+        test_examples(DropColumn {})
+    }
 }

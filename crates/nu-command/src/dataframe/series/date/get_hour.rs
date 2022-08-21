@@ -3,16 +3,16 @@ use super::super::super::values::{Column, NuDataFrame};
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, Type, Value,
 };
-use polars::prelude::IntoSeries;
+use polars::prelude::{DatetimeMethods, IntoSeries};
 
 #[derive(Clone)]
 pub struct GetHour;
 
 impl Command for GetHour {
     fn name(&self) -> &str {
-        "dfr get-hour"
+        "get-hour"
     }
 
     fn usage(&self) -> &str {
@@ -20,15 +20,18 @@ impl Command for GetHour {
     }
 
     fn signature(&self) -> Signature {
-        Signature::build(self.name()).category(Category::Custom("dataframe".into()))
+        Signature::build(self.name())
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
+            .category(Category::Custom("dataframe".into()))
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
             description: "Returns hour from a date",
             example: r#"let dt = ('2020-08-04T16:39:18+00:00' | into datetime -z 'UTC');
-    let df = ([$dt $dt] | dfr to-df);
-    $df | dfr get-hour"#,
+    let df = ([$dt $dt] | into df);
+    $df | get-hour"#,
             result: Some(
                 NuDataFrame::try_from_columns(vec![Column::new(
                     "0".to_string(),

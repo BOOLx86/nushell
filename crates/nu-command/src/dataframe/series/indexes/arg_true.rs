@@ -3,16 +3,16 @@ use super::super::super::values::{Column, NuDataFrame};
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, Type, Value,
 };
-use polars::prelude::IntoSeries;
+use polars::prelude::{arg_where, col, IntoLazy};
 
 #[derive(Clone)]
 pub struct ArgTrue;
 
 impl Command for ArgTrue {
     fn name(&self) -> &str {
-        "dfr arg-true"
+        "arg-true"
     }
 
     fn usage(&self) -> &str {
@@ -20,13 +20,16 @@ impl Command for ArgTrue {
     }
 
     fn signature(&self) -> Signature {
-        Signature::build(self.name()).category(Category::Custom("dataframe".into()))
+        Signature::build(self.name())
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
+            .category(Category::Custom("dataframe".into()))
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
             description: "Returns indexes where values are true",
-            example: "[false true false] | dfr to-df | dfr arg-true",
+            example: "[false true false] | into df | arg-true",
             result: Some(
                 NuDataFrame::try_from_columns(vec![Column::new(
                     "arg_true".to_string(),
@@ -56,23 +59,41 @@ fn command(
     input: PipelineData,
 ) -> Result<PipelineData, ShellError> {
     let df = NuDataFrame::try_from_pipeline(input, call.head)?;
-
-    let series = df.as_series(call.head)?;
-    let bool = series.bool().map_err(|_| {
-        ShellError::GenericError(
-            "Error converting to bool".into(),
-            "all-false only works with series of type bool".into(),
+    let columns = df.as_ref().get_column_names();
+    if columns.len() > 1 {
+        return Err(ShellError::GenericError(
+            "Error using as series".into(),
+            "dataframe has more than one column".into(),
             Some(call.head),
             None,
             Vec::new(),
-        )
-    })?;
+        ));
+    }
 
-    let mut res = bool.arg_true().into_series();
-    res.rename("arg_true");
+    match columns.first() {
+        Some(column) => {
+            let expression = arg_where(col(column).eq(true)).alias("arg_true");
+            let res = df
+                .as_ref()
+                .clone()
+                .lazy()
+                .select(&[expression])
+                .collect()
+                .map_err(|err| {
+                    ShellError::GenericError(
+                        "Error creating index column".into(),
+                        err.to_string(),
+                        Some(call.head),
+                        None,
+                        Vec::new(),
+                    )
+                })?;
 
-    NuDataFrame::try_from_series(vec![res], call.head)
-        .map(|df| PipelineData::Value(NuDataFrame::into_value(df, call.head), None))
+            let value = NuDataFrame::dataframe_into_value(res, call.head);
+            Ok(PipelineData::Value(value, None))
+        }
+        _ => todo!(),
+    }
 }
 
 #[cfg(test)]

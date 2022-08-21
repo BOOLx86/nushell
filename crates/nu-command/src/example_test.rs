@@ -13,8 +13,8 @@ use crate::To;
 
 #[cfg(test)]
 use super::{
-    Ansi, Date, From, If, Into, Math, Path, Random, Split, SplitColumn, SplitRow, Str, StrCollect,
-    StrLength, StrReplace, Url, Wrap,
+    Ansi, Date, From, If, Into, LetEnv, Math, Path, Random, Split, SplitColumn, SplitRow, Str,
+    StrCollect, StrLength, StrReplace, Url, Wrap,
 };
 
 #[cfg(test)]
@@ -47,6 +47,7 @@ pub fn test_examples(cmd: impl Command + 'static) {
         working_set.add_decl(Box::new(Url));
         working_set.add_decl(Box::new(Ansi));
         working_set.add_decl(Box::new(Wrap));
+        working_set.add_decl(Box::new(LetEnv));
 
         use super::Echo;
         working_set.add_decl(Box::new(Echo));
@@ -57,7 +58,10 @@ pub fn test_examples(cmd: impl Command + 'static) {
     };
 
     let cwd = std::env::current_dir().expect("Could not get current working directory.");
-    let _ = engine_state.merge_delta(delta, None, &cwd);
+
+    engine_state
+        .merge_delta(delta)
+        .expect("Error merging delta");
 
     for example in examples {
         // Skip tests that don't have results to compare to
@@ -76,11 +80,10 @@ pub fn test_examples(cmd: impl Command + 'static) {
                 span: Span::test_data(),
             },
         );
-        let _ = engine_state.merge_delta(
-            StateWorkingSet::new(&*engine_state).render(),
-            Some(&mut stack),
-            &cwd,
-        );
+
+        engine_state
+            .merge_env(&mut stack, &cwd)
+            .expect("Error merging environment");
 
         let (block, delta) = {
             let mut working_set = StateWorkingSet::new(&*engine_state);
@@ -99,7 +102,9 @@ pub fn test_examples(cmd: impl Command + 'static) {
             (output, working_set.render())
         };
 
-        let _ = engine_state.merge_delta(delta, None, &cwd);
+        engine_state
+            .merge_delta(delta)
+            .expect("Error merging delta");
 
         let mut stack = Stack::new();
 

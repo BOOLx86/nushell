@@ -78,6 +78,24 @@ pub enum ParseError {
     )]
     BuiltinCommandInPipeline(String, #[label("not allowed in pipeline")] Span),
 
+    #[error("Let statement used in pipeline.")]
+    #[diagnostic(
+        code(nu::parser::unexpected_keyword),
+        url(docsrs),
+        help(
+            "Assigning '{0}' to '{1}' does not produce a value to be piped. If the pipeline result is meant to be assigned to '{1}', use 'let {1} = ({0} | ...)'."
+        )
+    )]
+    LetInPipeline(String, String, #[label("let in pipeline")] Span),
+
+    #[error("Let used with builtin variable name.")]
+    #[diagnostic(
+        code(nu::parser::let_builtin_var),
+        url(docsrs),
+        help("'{0}' is the name of a builtin Nushell variable. `let` cannot assign to it.")
+    )]
+    LetBuiltinVar(String, #[label("already a builtin variable")] Span),
+
     #[error("Incorrect value")]
     #[diagnostic(code(nu::parser::incorrect_value), url(docsrs), help("{2}"))]
     IncorrectValue(String, #[label("unexpected {0}")] Span, String),
@@ -98,9 +116,53 @@ pub enum ParseError {
     #[diagnostic(
         code(nu::parser::module_not_found),
         url(docsrs),
-        help("module files need to be available before your script is run")
+        help("module files and their paths must be available before your script is run as parsing occurs before anything is evaluated")
     )]
     ModuleNotFound(#[label = "module not found"] Span),
+
+    #[error("Active overlay not found.")]
+    #[diagnostic(code(nu::parser::active_overlay_not_found), url(docsrs))]
+    ActiveOverlayNotFound(#[label = "not an active overlay"] Span),
+
+    #[error("Overlay prefix mismatch.")]
+    #[diagnostic(
+        code(nu::parser::overlay_prefix_mismatch),
+        url(docsrs),
+        help("Overlay {0} already exists {1} a prefix. To add it again, do it {1} the --prefix flag.")
+    )]
+    OverlayPrefixMismatch(
+        String,
+        String,
+        #[label = "already exists {1} a prefix"] Span,
+    ),
+
+    #[error("Module or overlay not found.")]
+    #[diagnostic(
+        code(nu::parser::module_or_overlay_not_found),
+        url(docsrs),
+        help("Requires either an existing overlay, a module, or an import pattern defining a module.")
+    )]
+    ModuleOrOverlayNotFound(#[label = "not a module or an overlay"] Span),
+
+    #[error("Cannot remove the last overlay.")]
+    #[diagnostic(
+        code(nu::parser::cant_remove_last_overlay),
+        url(docsrs),
+        help("At least one overlay must always be active.")
+    )]
+    CantRemoveLastOverlay(#[label = "this is the last overlay, can't remove it"] Span),
+
+    #[error("Cannot remove default overlay.")]
+    #[diagnostic(
+        code(nu::parser::cant_remove_default_overlay),
+        url(docsrs),
+        help("'{0}' is a default overlay. Default overlays cannot be removed.")
+    )]
+    CantRemoveDefaultOverlay(String, #[label = "can't remove overlay"] Span),
+
+    #[error("Cannot add overlay.")]
+    #[diagnostic(code(nu::parser::cant_add_overlay_help), url(docsrs), help("{0}"))]
+    CantAddOverlayHelp(String, #[label = "cannot add this overlay"] Span),
 
     #[error("Not found.")]
     #[diagnostic(code(nu::parser::not_found), url(docsrs))]
@@ -245,6 +307,15 @@ pub enum ParseError {
     #[diagnostic(code(nu::parser::file_not_found), url(docsrs))]
     FileNotFound(String, #[label("File not found: {0}")] Span),
 
+    /// Error while trying to read a file
+    ///
+    /// ## Resolution
+    ///
+    /// The error will show the result from a file operation
+    #[error("Error trying to read file")]
+    #[diagnostic(code(nu::shell::error_reading_file), url(docsrs))]
+    ReadingFile(String, #[label("{0}")] Span),
+
     #[error("{0}")]
     #[diagnostic()]
     LabeledError(String, String, #[label("{1}")] Span),
@@ -263,11 +334,19 @@ impl ParseError {
             ParseError::ExpectedKeyword(_, s) => *s,
             ParseError::UnexpectedKeyword(_, s) => *s,
             ParseError::BuiltinCommandInPipeline(_, s) => *s,
+            ParseError::LetInPipeline(_, _, s) => *s,
+            ParseError::LetBuiltinVar(_, s) => *s,
             ParseError::IncorrectValue(_, s, _) => *s,
             ParseError::MultipleRestParams(s) => *s,
             ParseError::VariableNotFound(s) => *s,
             ParseError::VariableNotValid(s) => *s,
             ParseError::ModuleNotFound(s) => *s,
+            ParseError::ModuleOrOverlayNotFound(s) => *s,
+            ParseError::ActiveOverlayNotFound(s) => *s,
+            ParseError::OverlayPrefixMismatch(_, _, s) => *s,
+            ParseError::CantRemoveLastOverlay(s) => *s,
+            ParseError::CantRemoveDefaultOverlay(_, s) => *s,
+            ParseError::CantAddOverlayHelp(_, s) => *s,
             ParseError::NotFound(s) => *s,
             ParseError::DuplicateCommandDef(s) => *s,
             ParseError::UnknownCommand(s) => *s,
@@ -297,6 +376,7 @@ impl ParseError {
             ParseError::SourcedFileNotFound(_, s) => *s,
             ParseError::RegisteredFileNotFound(_, s) => *s,
             ParseError::FileNotFound(_, s) => *s,
+            ParseError::ReadingFile(_, s) => *s,
             ParseError::LabeledError(_, _, s) => *s,
         }
     }

@@ -190,3 +190,51 @@ fn read_bool() {
 
     assert_eq!(actual.out, "true")
 }
+
+#[test]
+fn float_doesnt_become_int() {
+    let actual = nu!(
+        cwd: "tests/fixtures/formats", pipeline(
+        r#"
+            1.0 | to nuon
+        "#
+    ));
+
+    assert_eq!(actual.out, "1.0")
+}
+
+#[test]
+fn float_inf_parsed_properly() {
+    let actual = nu!(
+        cwd: "tests/fixtures/formats", pipeline(
+        r#"
+            inf | to nuon
+        "#
+    ));
+
+    assert_eq!(actual.out, "inf")
+}
+
+#[test]
+fn float_neg_inf_parsed_properly() {
+    let actual = nu!(
+        cwd: "tests/fixtures/formats", pipeline(
+        r#"
+            -inf | to nuon
+        "#
+    ));
+
+    assert_eq!(actual.out, "-inf")
+}
+
+#[test]
+fn float_nan_parsed_properly() {
+    let actual = nu!(
+        cwd: "tests/fixtures/formats", pipeline(
+        r#"
+            NaN | to nuon
+        "#
+    ));
+
+    assert_eq!(actual.out, "NaN")
+}

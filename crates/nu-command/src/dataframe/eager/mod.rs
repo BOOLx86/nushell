@@ -1,7 +1,5 @@
-mod aggregate;
 mod append;
-mod column;
-mod command;
+mod columns;
 mod describe;
 mod drop;
 mod drop_duplicates;
@@ -11,18 +9,14 @@ mod dummies;
 mod filter_with;
 mod first;
 mod get;
-mod groupby;
-mod join;
 mod last;
 mod list;
 mod melt;
 mod open;
-mod pivot;
 mod rename;
 mod sample;
 mod shape;
 mod slice;
-mod sort;
 mod take;
 mod to_csv;
 mod to_df;
@@ -32,10 +26,8 @@ mod with_column;
 
 use nu_protocol::engine::StateWorkingSet;
 
-pub use aggregate::Aggregate;
 pub use append::AppendDF;
-pub use column::ColumnDF;
-pub use command::Dataframe;
+pub use columns::ColumnsDF;
 pub use describe::DescribeDF;
 pub use drop::DropDF;
 pub use drop_duplicates::DropDuplicates;
@@ -45,18 +37,14 @@ pub use dummies::Dummies;
 pub use filter_with::FilterWith;
 pub use first::FirstDF;
 pub use get::GetDF;
-pub use groupby::CreateGroupBy;
-pub use join::JoinDF;
 pub use last::LastDF;
 pub use list::ListDF;
 pub use melt::MeltDF;
 pub use open::OpenDataFrame;
-pub use pivot::PivotDF;
 pub use rename::RenameDF;
 pub use sample::SampleDF;
 pub use shape::ShapeDF;
 pub use slice::SliceDF;
-pub use sort::SortDF;
 pub use take::TakeDF;
 pub use to_csv::ToCSV;
 pub use to_df::ToDataFrame;
@@ -76,11 +64,8 @@ pub fn add_eager_decls(working_set: &mut StateWorkingSet) {
 
     // Dataframe commands
     bind_command!(
-        Aggregate,
         AppendDF,
-        ColumnDF,
-        CreateGroupBy,
-        Dataframe,
+        ColumnsDF,
         DataTypes,
         DescribeDF,
         DropDF,
@@ -90,17 +75,14 @@ pub fn add_eager_decls(working_set: &mut StateWorkingSet) {
         FilterWith,
         FirstDF,
         GetDF,
-        JoinDF,
         LastDF,
         ListDF,
         MeltDF,
         OpenDataFrame,
-        PivotDF,
         RenameDF,
         SampleDF,
         ShapeDF,
         SliceDF,
-        SortDF,
         TakeDF,
         ToCSV,
         ToDataFrame,

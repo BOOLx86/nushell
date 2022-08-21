@@ -1,5 +1,8 @@
 mod table;
-mod wrap;
+mod table_theme;
+mod textstyle;
+mod width_control;
 
-pub use table::{draw_table, StyledString, Table, TextStyle, Theme};
-pub use wrap::Alignment;
+pub use table::{Alignments, Table};
+pub use table_theme::TableTheme;
+pub use textstyle::{Alignment, StyledString, TextStyle};

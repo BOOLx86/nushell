@@ -10,7 +10,9 @@ use crate::BlockId;
 use crate::PipelineData;
 use crate::ShellError;
 use crate::SyntaxShape;
+use crate::Type;
 use crate::VarId;
+use std::fmt::Write;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Flag {
@@ -36,11 +38,13 @@ pub struct PositionalArg {
     pub default_value: Option<Expression>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Category {
     Default,
     Conversions,
     Core,
+    Bits,
+    Bytes,
     Date,
     Env,
     Experimental,
@@ -48,6 +52,7 @@ pub enum Category {
     Filters,
     Formats,
     Math,
+    Misc,
     Network,
     Random,
     Platform,
@@ -57,6 +62,7 @@ pub enum Category {
     Viewers,
     Hash,
     Generators,
+    Chart,
     Custom(String),
     Deprecated,
 }
@@ -74,6 +80,7 @@ impl std::fmt::Display for Category {
             Category::Filters => "filters",
             Category::Formats => "formats",
             Category::Math => "math",
+            Category::Misc => "misc",
             Category::Network => "network",
             Category::Random => "random",
             Category::Platform => "platform",
@@ -83,8 +90,11 @@ impl std::fmt::Display for Category {
             Category::Viewers => "viewers",
             Category::Hash => "hash",
             Category::Generators => "generators",
+            Category::Chart => "chart",
             Category::Custom(name) => name,
             Category::Deprecated => "deprecated",
+            Category::Bytes => "bytes",
+            Category::Bits => "bits",
         };
 
         write!(f, "{}", msg)
@@ -101,6 +111,8 @@ pub struct Signature {
     pub optional_positional: Vec<PositionalArg>,
     pub rest_positional: Option<PositionalArg>,
     pub named: Vec<Flag>,
+    pub input_type: Type,
+    pub output_type: Type,
     pub is_filter: bool,
     pub creates_scope: bool,
     // Signature category used to classify commands stored in the list of declarations
@@ -122,6 +134,25 @@ impl Eq for Signature {}
 
 impl Signature {
     pub fn new(name: impl Into<String>) -> Signature {
+        Signature {
+            name: name.into(),
+            usage: String::new(),
+            extra_usage: String::new(),
+            search_terms: vec![],
+            required_positional: vec![],
+            optional_positional: vec![],
+            rest_positional: None,
+            input_type: Type::Any,
+            output_type: Type::Any,
+            named: vec![],
+            is_filter: false,
+            creates_scope: false,
+            category: Category::Default,
+        }
+    }
+
+    // Add a default help option to a signature
+    pub fn add_help(mut self) -> Signature {
         // default help flag
         let flag = Flag {
             long: "help".into(),
@@ -132,24 +163,13 @@ impl Signature {
             var_id: None,
             default_value: None,
         };
-
-        Signature {
-            name: name.into(),
-            usage: String::new(),
-            extra_usage: String::new(),
-            search_terms: vec![],
-            required_positional: vec![],
-            optional_positional: vec![],
-            rest_positional: None,
-            named: vec![flag],
-            is_filter: false,
-            creates_scope: false,
-            category: Category::Default,
-        }
+        self.named.push(flag);
+        self
     }
 
+    // Build an internal signature with default help option
     pub fn build(name: impl Into<String>) -> Signature {
-        Signature::new(name.into())
+        Signature::new(name.into()).add_help()
     }
 
     /// Add a description to the signature
@@ -200,7 +220,7 @@ impl Signature {
         self
     }
 
-    /// Add a required positional argument to the signature
+    /// Add an optional positional argument to the signature
     pub fn optional(
         mut self,
         name: impl Into<String>,
@@ -303,6 +323,18 @@ impl Signature {
         self
     }
 
+    /// Changes the input type of the command signature
+    pub fn input_type(mut self, input_type: Type) -> Signature {
+        self.input_type = input_type;
+        self
+    }
+
+    /// Changes the output type of the command signature
+    pub fn output_type(mut self, output_type: Type) -> Signature {
+        self.output_type = output_type;
+        self
+    }
+
     /// Changes the signature category
     pub fn category(mut self, category: Category) -> Signature {
         self.category = category;
@@ -337,7 +369,7 @@ impl Signature {
         }
 
         if let Some(rest) = &self.rest_positional {
-            one_liner.push_str(&format!("...{}", get_positional_short_name(rest, false)));
+            let _ = write!(one_liner, "...{}", get_positional_short_name(rest, false));
         }
 
         // if !self.subcommands.is_empty() {

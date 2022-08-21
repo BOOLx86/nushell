@@ -29,6 +29,10 @@ impl Command for Select {
         "Down-select table to only these columns."
     }
 
+    fn search_terms(&self) -> Vec<&str> {
+        vec!["pick", "choose", "get"]
+    }
+
     fn run(
         &self,
         engine_state: &EngineState,
@@ -124,9 +128,9 @@ fn select(
                     let mut vals = vec![];
                     for path in &columns {
                         //FIXME: improve implementation to not clone
-                        let fetcher = input_val.clone().follow_cell_path(&path.members)?;
+                        let fetcher = input_val.clone().follow_cell_path(&path.members, false)?;
 
-                        cols.push(path.into_string());
+                        cols.push(path.into_string().replace('.', "_"));
                         vals.push(fetcher);
                     }
 
@@ -142,19 +146,19 @@ fn select(
                 .set_metadata(metadata))
         }
         PipelineData::ListStream(stream, metadata, ..) => Ok(stream
-            .map(move |x| {
+            .map(move |(x, _)| {
                 if !columns.is_empty() {
                     let mut cols = vec![];
                     let mut vals = vec![];
                     for path in &columns {
                         //FIXME: improve implementation to not clone
-                        match x.clone().follow_cell_path(&path.members) {
+                        match x.clone().follow_cell_path(&path.members, false) {
                             Ok(value) => {
-                                cols.push(path.into_string());
+                                cols.push(path.into_string().replace('.', "_"));
                                 vals.push(value);
                             }
                             Err(_) => {
-                                cols.push(path.into_string());
+                                cols.push(path.into_string().replace('.', "_"));
                                 vals.push(Value::Nothing { span });
                             }
                         }
@@ -173,9 +177,9 @@ fn select(
 
                 for cell_path in columns {
                     // FIXME: remove clone
-                    let result = v.clone().follow_cell_path(&cell_path.members)?;
+                    let result = v.clone().follow_cell_path(&cell_path.members, false)?;
 
-                    cols.push(cell_path.into_string());
+                    cols.push(cell_path.into_string().replace('.', "_"));
                     vals.push(result);
                 }
 
@@ -203,7 +207,7 @@ impl Iterator for NthIterator {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             if !self.skip {
-                if let Some(row) = self.rows.get(0) {
+                if let Some(row) = self.rows.first() {
                     if self.current == *row {
                         self.rows.remove(0);
                         self.current += 1;
@@ -216,7 +220,7 @@ impl Iterator for NthIterator {
                 } else {
                     return None;
                 }
-            } else if let Some(row) = self.rows.get(0) {
+            } else if let Some(row) = self.rows.first() {
                 if self.current == *row {
                     self.rows.remove(0);
                     self.current += 1;

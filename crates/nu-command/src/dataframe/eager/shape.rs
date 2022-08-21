@@ -1,7 +1,7 @@
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, Type, Value,
 };
 
 use crate::dataframe::values::Column;
@@ -13,7 +13,7 @@ pub struct ShapeDF;
 
 impl Command for ShapeDF {
     fn name(&self) -> &str {
-        "dfr shape"
+        "shape"
     }
 
     fn usage(&self) -> &str {
@@ -21,13 +21,16 @@ impl Command for ShapeDF {
     }
 
     fn signature(&self) -> Signature {
-        Signature::build(self.name()).category(Category::Custom("dataframe".into()))
+        Signature::build(self.name())
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
+            .category(Category::Custom("dataframe".into()))
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
             description: "Shows row and column shape",
-            example: "[[a b]; [1 2] [3 4]] | dfr to-df | dfr shape",
+            example: "[[a b]; [1 2] [3 4]] | into df | shape",
             result: Some(
                 NuDataFrame::try_from_columns(vec![
                     Column::new("rows".to_string(), vec![Value::test_int(2)]),

@@ -4,7 +4,7 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Value,
+    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
 };
 use polars::prelude::{ChunkSet, DataType, IntoSeries};
 
@@ -13,7 +13,7 @@ pub struct SetSeries;
 
 impl Command for SetSeries {
     fn name(&self) -> &str {
-        "dfr set"
+        "set"
     }
 
     fn usage(&self) -> &str {
@@ -29,15 +29,17 @@ impl Command for SetSeries {
                 "mask indicating insertions",
                 Some('m'),
             )
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
             .category(Category::Custom("dataframe".into()))
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![Example {
             description: "Shifts the values by a given period",
-            example: r#"let s = ([1 2 2 3 3] | dfr to-df | dfr shift 2);
-    let mask = ($s | dfr is-null);
-    $s | dfr set 0 --mask $mask"#,
+            example: r#"let s = ([1 2 2 3 3] | into df | shift 2);
+    let mask = ($s | is-null);
+    $s | set 0 --mask $mask"#,
             result: Some(
                 NuDataFrame::try_from_columns(vec![Column::new(
                     "0".to_string(),
@@ -127,7 +129,7 @@ fn command(
             NuDataFrame::try_from_series(vec![res.into_series()], call.head)
         }
         Value::Float { val, span } => {
-            let chunked = series.as_ref().f64().map_err(|e| {
+            let chunked = series.f64().map_err(|e| {
                 ShellError::GenericError(
                     "Error casting to f64".into(),
                     e.to_string(),
@@ -150,7 +152,7 @@ fn command(
             NuDataFrame::try_from_series(vec![res.into_series()], call.head)
         }
         Value::String { val, span } => {
-            let chunked = series.as_ref().utf8().map_err(|e| {
+            let chunked = series.utf8().map_err(|e| {
                 ShellError::GenericError(
                     "Error casting to string".into(),
                     e.to_string(),

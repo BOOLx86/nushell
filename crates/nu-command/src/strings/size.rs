@@ -1,3 +1,4 @@
+use fancy_regex::Regex;
 use nu_protocol::ast::Call;
 use nu_protocol::engine::{Command, EngineState, Stack};
 use nu_protocol::{Category, Example, PipelineData, ShellError, Signature, Span, Value};
@@ -22,6 +23,10 @@ impl Command for Size {
 
     fn usage(&self) -> &str {
         "Gather word count statistics on the text."
+    }
+
+    fn search_terms(&self) -> Vec<&str> {
+        vec!["count", "word", "character", "unicode", "wc"]
     }
 
     fn run(
@@ -261,10 +266,13 @@ impl Count for Counter {
                 // use regex here because it can search for CRLF first and not duplicate the count
                 let line_ending_types = [CRLF, LF, CR, NEL, FF, LS, PS];
                 let pattern = &line_ending_types.join("|");
-                let newline_pattern = regex::Regex::new(pattern).expect("Unable to create regex");
+                let newline_pattern = Regex::new(pattern).expect("Unable to create regex");
                 let line_endings = newline_pattern
                     .find_iter(s)
-                    .map(|f| f.as_str().to_string())
+                    .map(|f| match f {
+                        Ok(mat) => mat.as_str().to_string(),
+                        Err(_) => "".to_string(),
+                    })
                     .collect::<Vec<String>>();
 
                 let has_line_ending_suffix =

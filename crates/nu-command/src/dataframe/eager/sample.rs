@@ -2,7 +2,7 @@ use nu_engine::CallExt;
 use nu_protocol::{
     ast::Call,
     engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Spanned, SyntaxShape,
+    Category, Example, PipelineData, ShellError, Signature, Spanned, SyntaxShape, Type,
 };
 
 use super::super::values::NuDataFrame;
@@ -12,7 +12,7 @@ pub struct SampleDF;
 
 impl Command for SampleDF {
     fn name(&self) -> &str {
-        "dfr sample"
+        "sample"
     }
 
     fn usage(&self) -> &str {
@@ -33,7 +33,16 @@ impl Command for SampleDF {
                 "fraction of dataframe to be taken",
                 Some('f'),
             )
+            .named(
+                "seed",
+                SyntaxShape::Number,
+                "seed for the selection",
+                Some('s'),
+            )
             .switch("replace", "sample with replace", Some('e'))
+            .switch("shuffle", "shuffle sample", Some('u'))
+            .input_type(Type::Custom("dataframe".into()))
+            .output_type(Type::Custom("dataframe".into()))
             .category(Category::Custom("dataframe".into()))
     }
 
@@ -41,12 +50,12 @@ impl Command for SampleDF {
         vec![
             Example {
                 description: "Sample rows from dataframe",
-                example: "[[a b]; [1 2] [3 4]] | dfr to-df | dfr sample -n 1",
+                example: "[[a b]; [1 2] [3 4]] | into df | sample -n 1",
                 result: None, // No expected value because sampling is random
             },
             Example {
                 description: "Shows sample row using fraction and replace",
-                example: "[[a b]; [1 2] [3 4] [5 6]] | dfr to-df | dfr sample -f 0.5 -e",
+                example: "[[a b]; [1 2] [3 4] [5 6]] | into df | sample -f 0.5 -e",
                 result: None, // No expected value because sampling is random
             },
         ]
@@ -71,29 +80,39 @@ fn command(
 ) -> Result<PipelineData, ShellError> {
     let rows: Option<Spanned<usize>> = call.get_flag(engine_state, stack, "n-rows")?;
     let fraction: Option<Spanned<f64>> = call.get_flag(engine_state, stack, "fraction")?;
+    let seed: Option<u64> = call
+        .get_flag::<i64>(engine_state, stack, "seed")?
+        .map(|val| val as u64);
     let replace: bool = call.has_flag("replace");
+    let shuffle: bool = call.has_flag("shuffle");
 
     let df = NuDataFrame::try_from_pipeline(input, call.head)?;
 
     match (rows, fraction) {
-        (Some(rows), None) => df.as_ref().sample_n(rows.item, replace, 0).map_err(|e| {
-            ShellError::GenericError(
-                "Error creating sample".into(),
-                e.to_string(),
-                Some(rows.span),
-                None,
-                Vec::new(),
-            )
-        }),
-        (None, Some(frac)) => df.as_ref().sample_frac(frac.item, replace, 0).map_err(|e| {
-            ShellError::GenericError(
-                "Error creating sample".into(),
-                e.to_string(),
-                Some(frac.span),
-                None,
-                Vec::new(),
-            )
-        }),
+        (Some(rows), None) => df
+            .as_ref()
+            .sample_n(rows.item, replace, shuffle, seed)
+            .map_err(|e| {
+                ShellError::GenericError(
+                    "Error creating sample".into(),
+                    e.to_string(),
+                    Some(rows.span),
+                    None,
+                    Vec::new(),
+                )
+            }),
+        (None, Some(frac)) => df
+            .as_ref()
+            .sample_frac(frac.item, replace, shuffle, seed)
+            .map_err(|e| {
+                ShellError::GenericError(
+                    "Error creating sample".into(),
+                    e.to_string(),
+                    Some(frac.span),
+                    None,
+                    Vec::new(),
+                )
+            }),
         (Some(_), Some(_)) => Err(ShellError::GenericError(
             "Incompatible flags".into(),
             "Only one selection criterion allowed".into(),
