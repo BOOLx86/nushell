@@ -1,14 +1,26 @@
+use crate::input_handler::{operate, CmdArgument};
 use nu_engine::CallExt;
 use nu_protocol::ast::Call;
 use nu_protocol::ast::CellPath;
 use nu_protocol::engine::{Command, EngineState, Stack};
 use nu_protocol::Category;
-use nu_protocol::{
-    Example, PipelineData, ShellError, Signature, Span, Spanned, SyntaxShape, Value,
-};
+use nu_protocol::{Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Value};
 
 #[derive(Clone)]
 pub struct SubCommand;
+
+struct Arguments {
+    substring: String,
+    cell_paths: Option<Vec<CellPath>>,
+    case_insensitive: bool,
+    not_contain: bool,
+}
+
+impl CmdArgument for Arguments {
+    fn take_cell_paths(&mut self) -> Option<Vec<CellPath>> {
+        self.cell_paths.take()
+    }
+}
 
 impl Command for SubCommand {
     fn name(&self) -> &str {
@@ -17,11 +29,11 @@ impl Command for SubCommand {
 
     fn signature(&self) -> Signature {
         Signature::build("str contains")
-            .required("pattern", SyntaxShape::String, "the pattern to find")
+            .required("string", SyntaxShape::String, "the string to find")
             .rest(
                 "rest",
                 SyntaxShape::CellPath,
-                "optionally check if string contains pattern by column paths",
+                "optionally check if input contains string by column paths",
             )
             .switch("insensitive", "search is case insensitive", Some('i'))
             .switch("not", "does not contain", Some('n'))
@@ -29,11 +41,11 @@ impl Command for SubCommand {
     }
 
     fn usage(&self) -> &str {
-        "Checks if string contains pattern"
+        "Checks if input contains string"
     }
 
     fn search_terms(&self) -> Vec<&str> {
-        vec!["pattern", "match", "find", "search"]
+        vec!["substring", "match", "find", "search"]
     }
 
     fn run(
@@ -43,13 +55,21 @@ impl Command for SubCommand {
         call: &Call,
         input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
-        operate(engine_state, stack, call, input)
+        let cell_paths: Vec<CellPath> = call.rest(engine_state, stack, 1)?;
+        let cell_paths = (!cell_paths.is_empty()).then_some(cell_paths);
+        let args = Arguments {
+            substring: call.req::<String>(engine_state, stack, 0)?,
+            cell_paths,
+            case_insensitive: call.has_flag("insensitive"),
+            not_contain: call.has_flag("not"),
+        };
+        operate(action, args, input, call.head, engine_state.ctrlc.clone())
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![
             Example {
-                description: "Check if string contains pattern",
+                description: "Check if input contains string",
                 example: "'my_library.rb' | str contains '.rb'",
                 result: Some(Value::Bool {
                     val: true,
@@ -57,7 +77,7 @@ impl Command for SubCommand {
                 }),
             },
             Example {
-                description: "Check if string contains pattern case insensitive",
+                description: "Check if input contains string case insensitive",
                 example: "'my_library.rb' | str contains -i '.RB'",
                 result: Some(Value::Bool {
                     val: true,
@@ -65,7 +85,7 @@ impl Command for SubCommand {
                 }),
             },
             Example {
-                description: "Check if string contains pattern in a table",
+                description: "Check if input contains string in a table",
                 example: " [[ColA ColB]; [test 100]] | str contains 'e' ColA",
                 result: Some(Value::List {
                     vals: vec![Value::Record {
@@ -83,7 +103,7 @@ impl Command for SubCommand {
                 }),
             },
             Example {
-                description: "Check if string contains pattern in a table",
+                description: "Check if input contains string in a table",
                 example: " [[ColA ColB]; [test 100]] | str contains -i 'E' ColA",
                 result: Some(Value::List {
                     vals: vec![Value::Record {
@@ -101,7 +121,7 @@ impl Command for SubCommand {
                 }),
             },
             Example {
-                description: "Check if string contains pattern in a table",
+                description: "Check if input contains string in a table",
                 example: " [[ColA ColB]; [test hello]] | str contains 'e' ColA ColB",
                 result: Some(Value::List {
                     vals: vec![Value::Record {
@@ -122,7 +142,7 @@ impl Command for SubCommand {
                 }),
             },
             Example {
-                description: "Check if string contains pattern",
+                description: "Check if input string contains 'banana'",
                 example: "'hello' | str contains 'banana'",
                 result: Some(Value::Bool {
                     val: false,
@@ -130,7 +150,7 @@ impl Command for SubCommand {
                 }),
             },
             Example {
-                description: "Check if list contains pattern",
+                description: "Check if list contains string",
                 example: "[one two three] | str contains o",
                 result: Some(Value::List {
                     vals: vec![
@@ -151,7 +171,7 @@ impl Command for SubCommand {
                 }),
             },
             Example {
-                description: "Check if list does not contain pattern",
+                description: "Check if list does not contain string",
                 example: "[one two three] | str contains -n o",
                 result: Some(Value::List {
                     vals: vec![
@@ -175,63 +195,33 @@ impl Command for SubCommand {
     }
 }
 
-fn operate(
-    engine_state: &EngineState,
-    stack: &mut Stack,
-    call: &Call,
-    input: PipelineData,
-) -> Result<PipelineData, ShellError> {
-    let head = call.head;
-    let pattern: Spanned<String> = call.req(engine_state, stack, 0)?;
-    let column_paths: Vec<CellPath> = call.rest(engine_state, stack, 1)?;
-    let case_insensitive = call.has_flag("insensitive");
-    let not_contain = call.has_flag("not");
-
-    input.map(
-        move |v| {
-            if column_paths.is_empty() {
-                action(&v, case_insensitive, not_contain, &pattern.item, head)
-            } else {
-                let mut ret = v;
-                for path in &column_paths {
-                    let p = pattern.item.clone();
-                    let r = ret.update_cell_path(
-                        &path.members,
-                        Box::new(move |old| action(old, case_insensitive, not_contain, &p, head)),
-                    );
-                    if let Err(error) = r {
-                        return Value::Error { error };
-                    }
-                }
-                ret
-            }
-        },
-        engine_state.ctrlc.clone(),
-    )
-}
-
 fn action(
     input: &Value,
-    case_insensitive: bool,
-    not_contain: bool,
-    pattern: &str,
+    Arguments {
+        case_insensitive,
+        not_contain,
+        substring,
+        ..
+    }: &Arguments,
     head: Span,
 ) -> Value {
     match input {
         Value::String { val, .. } => Value::Bool {
             val: match case_insensitive {
                 true => {
-                    if not_contain {
-                        !val.to_lowercase().contains(pattern.to_lowercase().as_str())
+                    if *not_contain {
+                        !val.to_lowercase()
+                            .contains(substring.to_lowercase().as_str())
                     } else {
-                        val.to_lowercase().contains(pattern.to_lowercase().as_str())
+                        val.to_lowercase()
+                            .contains(substring.to_lowercase().as_str())
                     }
                 }
                 false => {
-                    if not_contain {
-                        !val.contains(pattern)
+                    if *not_contain {
+                        !val.contains(substring)
                     } else {
-                        val.contains(pattern)
+                        val.contains(substring)
                     }
                 }
             },

@@ -13,7 +13,7 @@ fn regular_columns() {
             ]
             | reject type first_name
             | columns
-            | str collect ", "
+            | str join ", "
         "#
     ));
 
@@ -56,7 +56,7 @@ fn complex_nested_columns() {
             | reject nu."0xATYKARNU" nu.committers
             | get nu
             | columns
-            | str collect ", "
+            | str join ", "
         "#,
     ));
 
@@ -75,7 +75,7 @@ fn ignores_duplicate_columns_rejected() {
             ]
             | reject "first name" "first name"
             | columns
-            | str collect ", "
+            | str join ", "
         "#
     ));
 
@@ -106,4 +106,17 @@ fn reject_table_from_raw_eval() {
     );
 
     assert!(actual.out.contains("record 0 fields"));
+}
+
+#[test]
+fn reject_nested_field() {
+    let actual = nu!(
+        cwd: ".", pipeline(
+            r#"
+            {a:{b:3,c:5}} | reject a.b | debug
+            "#
+        )
+    );
+
+    assert_eq!(actual.out, "{a: {c: 5}}");
 }

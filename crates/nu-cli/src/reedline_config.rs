@@ -114,7 +114,7 @@ pub(crate) fn add_menus(
             let res = eval_block(&engine_state, &mut temp_stack, &block, input, false, false)?;
 
             if let PipelineData::Value(value, None) = res {
-                for menu in create_menus(&value, config)? {
+                for menu in create_menus(&value)? {
                     line_editor =
                         add_menu(line_editor, &menu, engine_state.clone(), stack, config)?;
                 }
@@ -491,7 +491,7 @@ fn add_menu_keybindings(keybindings: &mut Keybindings) {
         KeyCode::Tab,
         ReedlineEvent::UntilFound(vec![
             ReedlineEvent::Menu("completion_menu".to_string()),
-            ReedlineEvent::MenuNext,
+            ReedlineEvent::Edit(vec![EditCommand::Complete]),
         ]),
     );
 
@@ -666,6 +666,7 @@ fn add_parsed_keybinding(
 
             KeyCode::Char(char)
         }
+        "space" => KeyCode::Char(' '),
         "down" => KeyCode::Down,
         "up" => KeyCode::Up,
         "left" => KeyCode::Left,
@@ -821,6 +822,8 @@ fn event_from_record(
         "ctrld" => ReedlineEvent::CtrlD,
         "ctrlc" => ReedlineEvent::CtrlC,
         "enter" => ReedlineEvent::Enter,
+        "submit" => ReedlineEvent::Submit,
+        "submitornewline" => ReedlineEvent::SubmitOrNewline,
         "esc" | "escape" => ReedlineEvent::Esc,
         "up" => ReedlineEvent::Up,
         "down" => ReedlineEvent::Down,
@@ -961,6 +964,7 @@ fn edit_from_record(
             let char = extract_char(value, config)?;
             EditCommand::MoveLeftBefore(char)
         }
+        "complete" => EditCommand::Complete,
         e => {
             return Err(ShellError::UnsupportedConfigValue(
                 "reedline EditCommand".to_string(),

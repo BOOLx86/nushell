@@ -4,7 +4,7 @@ use nu_protocol::{
     ast::{Block, Call, Expr, Expression, Operator},
     engine::{EngineState, Stack, Visibility},
     Config, HistoryFileFormat, IntoInterruptiblePipelineData, IntoPipelineData, ListStream,
-    PipelineData, Range, ShellError, Span, Spanned, SyntaxShape, Unit, Value, VarId,
+    PipelineData, Range, RawStream, ShellError, Span, Spanned, SyntaxShape, Unit, Value, VarId,
     ENV_VARIABLE_ID,
 };
 use nu_utils::stdout_write_all_and_flush;
@@ -173,6 +173,7 @@ pub fn eval_call(
 
 /// Redirect the environment from callee to the caller.
 pub fn redirect_env(engine_state: &EngineState, caller_stack: &mut Stack, callee_stack: &Stack) {
+    // Grab all environment variables from the callee
     let caller_env_vars = caller_stack.get_env_var_names(engine_state);
 
     // remove env vars that are present in the caller but not in the callee
@@ -200,7 +201,7 @@ fn eval_external(
     input: PipelineData,
     redirect_stdout: bool,
     redirect_stderr: bool,
-) -> Result<(PipelineData, bool), ShellError> {
+) -> Result<PipelineData, ShellError> {
     let decl_id = engine_state
         .find_decl("run-external".as_bytes(), &[])
         .ok_or(ShellError::ExternalNotSupported(head.span))?;
@@ -237,57 +238,7 @@ fn eval_external(
         ))
     }
 
-    // when the external command doesn't redirect output, we eagerly check the result
-    // and find if the command runs to failed.
-    let mut runs_to_failed = false;
-    let result = command.run(engine_state, stack, &call, input)?;
-    if let PipelineData::ExternalStream {
-        stdout: None,
-        stderr,
-        mut exit_code,
-        span,
-        metadata,
-    } = result
-    {
-        let exit_code = exit_code.take();
-        match exit_code {
-            Some(exit_code_stream) => {
-                let ctrlc = exit_code_stream.ctrlc.clone();
-                let exit_code: Vec<Value> = exit_code_stream
-                    .into_iter()
-                    .map(|(value, _)| value)
-                    .collect();
-                if let Some(Value::Int { val: code, .. }) = exit_code.last() {
-                    // if exit_code is not 0, it indicates error occured, return back Err.
-                    if *code != 0 {
-                        runs_to_failed = true;
-                    }
-                }
-                Ok((
-                    PipelineData::ExternalStream {
-                        stdout: None,
-                        stderr,
-                        exit_code: Some(ListStream::from_stream(exit_code.into_iter(), ctrlc)),
-                        span,
-                        metadata,
-                    },
-                    runs_to_failed,
-                ))
-            }
-            None => Ok((
-                PipelineData::ExternalStream {
-                    stdout: None,
-                    stderr,
-                    exit_code: None,
-                    span,
-                    metadata,
-                },
-                runs_to_failed,
-            )),
-        }
-    } else {
-        Ok((result, runs_to_failed))
-    }
+    command.run(engine_state, stack, &call, input)
 }
 
 pub fn eval_expression(
@@ -357,6 +308,15 @@ pub fn eval_expression(
             value.follow_cell_path(&cell_path.tail, false)
         }
         Expr::ImportPattern(_) => Ok(Value::Nothing { span: expr.span }),
+        Expr::Overlay(_) => {
+            let name =
+                String::from_utf8_lossy(engine_state.get_span_contents(&expr.span)).to_string();
+
+            Ok(Value::String {
+                val: name,
+                span: expr.span,
+            })
+        }
         Expr::Call(call) => {
             // FIXME: protect this collect with ctrl-c
             Ok(
@@ -376,7 +336,6 @@ pub fn eval_expression(
                 false,
                 false,
             )?
-            .0
             .into_value(span))
         }
         Expr::DateTime(dt) => Ok(Value::Date {
@@ -401,7 +360,7 @@ pub fn eval_expression(
 
             match op {
                 Operator::And => {
-                    if !lhs.is_true() {
+                    if lhs.is_false() {
                         Ok(Value::Bool {
                             val: false,
                             span: expr.span,
@@ -425,6 +384,10 @@ pub fn eval_expression(
                 Operator::Plus => {
                     let rhs = eval_expression(engine_state, stack, rhs)?;
                     lhs.add(op_span, &rhs, expr.span)
+                }
+                Operator::Append => {
+                    let rhs = eval_expression(engine_state, stack, rhs)?;
+                    lhs.append(op_span, &rhs, expr.span)
                 }
                 Operator::Minus => {
                     let rhs = eval_expression(engine_state, stack, rhs)?;
@@ -675,7 +638,6 @@ pub fn eval_expression_with_input(
     redirect_stdout: bool,
     redirect_stderr: bool,
 ) -> Result<(PipelineData, bool), ShellError> {
-    let mut external_failed = false;
     match expr {
         Expression {
             expr: Expr::Call(call),
@@ -695,7 +657,7 @@ pub fn eval_expression_with_input(
             expr: Expr::ExternalCall(head, args),
             ..
         } => {
-            let external_result = eval_external(
+            input = eval_external(
                 engine_state,
                 stack,
                 head,
@@ -704,8 +666,6 @@ pub fn eval_expression_with_input(
                 redirect_stdout,
                 redirect_stderr,
             )?;
-            input = external_result.0;
-            external_failed = external_result.1
         }
 
         Expression {
@@ -721,9 +681,88 @@ pub fn eval_expression_with_input(
         elem => {
             input = eval_expression(engine_state, stack, elem)?.into_pipeline_data();
         }
-    }
+    };
 
-    Ok((input, external_failed))
+    Ok(might_consume_external_result(input))
+}
+
+// if the result is ExternalStream without redirecting output.
+// that indicates we have no more commands to execute currently.
+// we can try to catch and detect if external command runs to failed.
+//
+// This is useful to commands with semicolon, we can detect errors early to avoid
+// commands after semicolon running.
+fn might_consume_external_result(input: PipelineData) -> (PipelineData, bool) {
+    let mut runs_to_failed = false;
+    if let PipelineData::ExternalStream {
+        stdout: None,
+        stderr,
+        mut exit_code,
+        span,
+        metadata,
+    } = input
+    {
+        let exit_code = exit_code.take();
+
+        // Note:
+        // In run-external's implementation detail, the result sender thread
+        // send out stderr message first, then stdout message, then exit_code.
+        //
+        // In this clause, we already make sure that `stdout` is None
+        // But not the case of `stderr`, so if `stderr` is not None
+        // We need to consume stderr message before reading external commands' exit code.
+        //
+        // Or we'll never have a chance to read exit_code if stderr producer produce too much stderr message.
+        // So we consume stderr stream and rebuild it.
+        let stderr = stderr.map(|stderr_stream| {
+            let stderr_ctrlc = stderr_stream.ctrlc.clone();
+            let stderr_span = stderr_stream.span;
+            let stderr_bytes = match stderr_stream.into_bytes() {
+                Err(_) => vec![],
+                Ok(bytes) => bytes.item,
+            };
+            RawStream::new(
+                Box::new(vec![Ok(stderr_bytes)].into_iter()),
+                stderr_ctrlc,
+                stderr_span,
+            )
+        });
+
+        match exit_code {
+            Some(exit_code_stream) => {
+                let ctrlc = exit_code_stream.ctrlc.clone();
+                let exit_code: Vec<Value> = exit_code_stream.into_iter().collect();
+                if let Some(Value::Int { val: code, .. }) = exit_code.last() {
+                    // if exit_code is not 0, it indicates error occured, return back Err.
+                    if *code != 0 {
+                        runs_to_failed = true;
+                    }
+                }
+                (
+                    PipelineData::ExternalStream {
+                        stdout: None,
+                        stderr,
+                        exit_code: Some(ListStream::from_stream(exit_code.into_iter(), ctrlc)),
+                        span,
+                        metadata,
+                    },
+                    runs_to_failed,
+                )
+            }
+            None => (
+                PipelineData::ExternalStream {
+                    stdout: None,
+                    stderr,
+                    exit_code: None,
+                    span,
+                    metadata,
+                },
+                runs_to_failed,
+            ),
+        }
+    } else {
+        (input, false)
+    }
 }
 
 pub fn eval_block(
@@ -783,7 +822,7 @@ pub fn eval_block(
                     };
 
                     if let Some(exit_code) = exit_code {
-                        let mut v: Vec<_> = exit_code.map(|(value, _)| value).collect();
+                        let mut v: Vec<_> = exit_code.collect();
 
                         if let Some(v) = v.pop() {
                             stack.add_env_var("LAST_EXIT_CODE".into(), v);
@@ -923,7 +962,7 @@ pub fn create_scope(
                 }
             }
 
-            cols.push("command".into());
+            cols.push("name".into());
             vals.push(Value::String {
                 val: String::from_utf8_lossy(command_name).to_string(),
                 span,
@@ -1298,6 +1337,22 @@ pub fn eval_variable(
             let mut output_cols = vec![];
             let mut output_vals = vec![];
 
+            if let Some(path) = engine_state.get_config_path("config-path") {
+                output_cols.push("config-path".into());
+                output_vals.push(Value::String {
+                    val: path.to_string_lossy().to_string(),
+                    span,
+                });
+            }
+
+            if let Some(path) = engine_state.get_config_path("env-path") {
+                output_cols.push("env-path".into());
+                output_vals.push(Value::String {
+                    val: path.to_string_lossy().to_string(),
+                    span,
+                });
+            }
+
             if let Some(mut config_path) = nu_path::config_dir() {
                 config_path.push("nushell");
                 let mut env_config_path = config_path.clone();
@@ -1321,21 +1376,25 @@ pub fn eval_variable(
                     span,
                 });
 
-                config_path.push("config.nu");
+                if engine_state.get_config_path("config-path").is_none() {
+                    config_path.push("config.nu");
 
-                output_cols.push("config-path".into());
-                output_vals.push(Value::String {
-                    val: config_path.to_string_lossy().to_string(),
-                    span,
-                });
+                    output_cols.push("config-path".into());
+                    output_vals.push(Value::String {
+                        val: config_path.to_string_lossy().to_string(),
+                        span,
+                    });
+                }
 
-                env_config_path.push("env.nu");
+                if engine_state.get_config_path("env-path").is_none() {
+                    env_config_path.push("env.nu");
 
-                output_cols.push("env-path".into());
-                output_vals.push(Value::String {
-                    val: env_config_path.to_string_lossy().to_string(),
-                    span,
-                });
+                    output_cols.push("env-path".into());
+                    output_vals.push(Value::String {
+                        val: env_config_path.to_string_lossy().to_string(),
+                        span,
+                    });
+                }
 
                 loginshell_path.push("login.nu");
 
@@ -1511,20 +1570,36 @@ fn compute(size: i64, unit: Unit, span: Span) -> Value {
             val: size * 1000 * 1000 * 1000,
             span,
         },
-        Unit::Minute => Value::Duration {
-            val: size * 1000 * 1000 * 1000 * 60,
-            span,
+        Unit::Minute => match size.checked_mul(1000 * 1000 * 1000 * 60) {
+            Some(val) => Value::Duration { val, span },
+            None => Value::Error {
+                error: ShellError::GenericError(
+                    "duration too large".into(),
+                    "duration too large".into(),
+                    Some(span),
+                    None,
+                    Vec::new(),
+                ),
+            },
         },
-        Unit::Hour => Value::Duration {
-            val: size * 1000 * 1000 * 1000 * 60 * 60,
-            span,
+        Unit::Hour => match size.checked_mul(1000 * 1000 * 1000 * 60 * 60) {
+            Some(val) => Value::Duration { val, span },
+            None => Value::Error {
+                error: ShellError::GenericError(
+                    "duration too large".into(),
+                    "duration too large".into(),
+                    Some(span),
+                    None,
+                    Vec::new(),
+                ),
+            },
         },
         Unit::Day => match size.checked_mul(1000 * 1000 * 1000 * 60 * 60 * 24) {
             Some(val) => Value::Duration { val, span },
             None => Value::Error {
                 error: ShellError::GenericError(
-                    "day duration too large".into(),
-                    "day duration too large".into(),
+                    "duration too large".into(),
+                    "duration too large".into(),
                     Some(span),
                     None,
                     Vec::new(),
@@ -1535,44 +1610,8 @@ fn compute(size: i64, unit: Unit, span: Span) -> Value {
             Some(val) => Value::Duration { val, span },
             None => Value::Error {
                 error: ShellError::GenericError(
-                    "week duration too large".into(),
-                    "week duration too large".into(),
-                    Some(span),
-                    None,
-                    Vec::new(),
-                ),
-            },
-        },
-        Unit::Month => match size.checked_mul(1000 * 1000 * 1000 * 60 * 60 * 24 * 30) {
-            Some(val) => Value::Duration { val, span },
-            None => Value::Error {
-                error: ShellError::GenericError(
-                    "month duration too large".into(),
-                    "month duration too large".into(),
-                    Some(span),
-                    None,
-                    Vec::new(),
-                ),
-            },
-        },
-        Unit::Year => match size.checked_mul(1000 * 1000 * 1000 * 60 * 60 * 24 * 365) {
-            Some(val) => Value::Duration { val, span },
-            None => Value::Error {
-                error: ShellError::GenericError(
-                    "year duration too large".into(),
-                    "year duration too large".into(),
-                    Some(span),
-                    None,
-                    Vec::new(),
-                ),
-            },
-        },
-        Unit::Decade => match size.checked_mul(1000 * 1000 * 1000 * 60 * 60 * 24 * 365 * 10) {
-            Some(val) => Value::Duration { val, span },
-            None => Value::Error {
-                error: ShellError::GenericError(
-                    "decade duration too large".into(),
-                    "decade duration too large".into(),
+                    "duration too large".into(),
+                    "duration too large".into(),
                     Some(span),
                     None,
                     Vec::new(),

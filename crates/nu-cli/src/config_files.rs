@@ -23,7 +23,6 @@ pub fn read_plugin_file(
     stack: &mut Stack,
     plugin_file: Option<Spanned<String>>,
     storage_path: &str,
-    is_perf_true: bool,
 ) {
     // Reading signatures from signature file
     // The plugin.nu file stores the parsed signature collected from each registered plugin
@@ -31,7 +30,7 @@ pub fn read_plugin_file(
 
     let plugin_path = engine_state.plugin_signatures.clone();
     if let Some(plugin_path) = plugin_path {
-        let plugin_filename = plugin_path.to_string_lossy().to_owned();
+        let plugin_filename = plugin_path.to_string_lossy();
 
         if let Ok(contents) = std::fs::read(&plugin_path) {
             eval_source(
@@ -44,9 +43,7 @@ pub fn read_plugin_file(
         }
     }
 
-    if is_perf_true {
-        info!("read_plugin_file {}:{}:{}", file!(), line!(), column!());
-    }
+    info!("read_plugin_file {}:{}:{}", file!(), line!(), column!());
 }
 
 #[cfg(feature = "plugin")]
@@ -80,7 +77,7 @@ pub fn eval_config_contents(
     stack: &mut Stack,
 ) {
     if config_path.exists() & config_path.is_file() {
-        let config_filename = config_path.to_string_lossy().to_owned();
+        let config_filename = config_path.to_string_lossy();
 
         if let Ok(contents) = std::fs::read(&config_path) {
             eval_source(

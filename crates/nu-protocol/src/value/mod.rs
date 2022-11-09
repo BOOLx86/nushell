@@ -7,8 +7,8 @@ mod unit;
 
 use crate::ast::Operator;
 use crate::ast::{CellPath, PathMember};
+use crate::ShellError;
 use crate::{did_you_mean, BlockId, Config, Span, Spanned, Type, VarId};
-use crate::{ShellError, ValueFormatter};
 use byte_unit::ByteUnit;
 use chrono::{DateTime, Duration, FixedOffset};
 use chrono_humanize::HumanTime;
@@ -610,6 +610,23 @@ impl Value {
         cell_path: &[PathMember],
         insensitive: bool,
     ) -> Result<Value, ShellError> {
+        self.follow_cell_path_helper(cell_path, insensitive, true)
+    }
+
+    pub fn follow_cell_path_not_from_user_input(
+        self,
+        cell_path: &[PathMember],
+        insensitive: bool,
+    ) -> Result<Value, ShellError> {
+        self.follow_cell_path_helper(cell_path, insensitive, false)
+    }
+
+    fn follow_cell_path_helper(
+        self,
+        cell_path: &[PathMember],
+        insensitive: bool,
+        from_user_input: bool,
+    ) -> Result<Value, ShellError> {
         let mut current = self;
         for member in cell_path {
             // FIXME: this uses a few extra clones for simplicity, but there may be a way
@@ -624,8 +641,10 @@ impl Value {
                         Value::List { vals: val, .. } => {
                             if let Some(item) = val.get(*count) {
                                 current = item.clone();
+                            } else if val.is_empty() {
+                                return Err(ShellError::AccessEmptyContent(*origin_span))
                             } else {
-                                return Err(ShellError::AccessBeyondEnd(val.len(), *origin_span));
+                                return Err(ShellError::AccessBeyondEnd(val.len() - 1, *origin_span));
                             }
                         }
                         Value::Binary { val, .. } => {
@@ -634,8 +653,10 @@ impl Value {
                                     val: *item as i64,
                                     span: *origin_span,
                                 };
+                            } else if val.is_empty() {
+                                return Err(ShellError::AccessEmptyContent(*origin_span))
                             } else {
-                                return Err(ShellError::AccessBeyondEnd(val.len(), *origin_span));
+                                return Err(ShellError::AccessBeyondEnd(val.len() - 1, *origin_span));
                             }
                         }
                         Value::Range { val, .. } => {
@@ -649,10 +670,9 @@ impl Value {
                             current = val.follow_path_int(*count, *origin_span)?;
                         }
                         x => {
-                            return Err(ShellError::IncompatiblePathAccess(
-                                format!("{}", x.get_type()),
-                                *origin_span,
-                            ))
+                            return Err(ShellError::TypeMismatchGenericMessage {
+                                err_message: format!("Can't access {} values with a row index. Try specifying a column name instead", x.get_type().to_shape()),
+                                span: *origin_span, })
                         }
                     }
                 }
@@ -673,9 +693,12 @@ impl Value {
                             }
                         }) {
                             current = found.1.clone();
-                        } else if let Some(suggestion) = did_you_mean(&cols, column_name) {
-                            return Err(ShellError::DidYouMean(suggestion, *origin_span));
                         } else {
+                            if from_user_input {
+                                if let Some(suggestion) = did_you_mean(&cols, column_name) {
+                                    return Err(ShellError::DidYouMean(suggestion, *origin_span));
+                                }
+                            }
                             return Err(ShellError::CantFindColumn(*origin_span, span));
                         }
                     }
@@ -820,8 +843,10 @@ impl Value {
                     Value::List { vals, .. } => {
                         if let Some(v) = vals.get_mut(*row_num) {
                             v.upsert_data_at_cell_path(&cell_path[1..], new_val)?
+                        } else if vals.is_empty() {
+                            return Err(ShellError::AccessEmptyContent(*span));
                         } else {
-                            return Err(ShellError::AccessBeyondEnd(vals.len(), *span));
+                            return Err(ShellError::AccessBeyondEnd(vals.len() - 1, *span));
                         }
                     }
                     v => return Err(ShellError::NotAList(*span, v.span()?)),
@@ -912,8 +937,10 @@ impl Value {
                     Value::List { vals, .. } => {
                         if let Some(v) = vals.get_mut(*row_num) {
                             v.update_data_at_cell_path(&cell_path[1..], new_val)?
+                        } else if vals.is_empty() {
+                            return Err(ShellError::AccessEmptyContent(*span));
                         } else {
-                            return Err(ShellError::AccessBeyondEnd(vals.len(), *span));
+                            return Err(ShellError::AccessBeyondEnd(vals.len() - 1, *span));
                         }
                     }
                     v => return Err(ShellError::NotAList(*span, v.span()?)),
@@ -924,6 +951,145 @@ impl Value {
             }
         }
         Ok(())
+    }
+
+    pub fn remove_data_at_cell_path(&mut self, cell_path: &[PathMember]) -> Result<(), ShellError> {
+        match cell_path.len() {
+            0 => Ok(()),
+            1 => {
+                let path_member = cell_path.first().expect("there is a first");
+                match path_member {
+                    PathMember::String {
+                        val: col_name,
+                        span,
+                    } => match self {
+                        Value::List { vals, .. } => {
+                            for val in vals.iter_mut() {
+                                match val {
+                                    Value::Record {
+                                        cols,
+                                        vals,
+                                        span: v_span,
+                                    } => {
+                                        let mut found = false;
+                                        for (i, col) in cols.clone().iter().enumerate() {
+                                            if col == col_name {
+                                                cols.remove(i);
+                                                vals.remove(i);
+                                                found = true;
+                                            }
+                                        }
+                                        if !found {
+                                            return Err(ShellError::CantFindColumn(*span, *v_span));
+                                        }
+                                    }
+                                    v => return Err(ShellError::CantFindColumn(*span, v.span()?)),
+                                }
+                            }
+                            Ok(())
+                        }
+                        Value::Record {
+                            cols,
+                            vals,
+                            span: v_span,
+                        } => {
+                            let mut found = false;
+                            for (i, col) in cols.clone().iter().enumerate() {
+                                if col == col_name {
+                                    cols.remove(i);
+                                    vals.remove(i);
+                                    found = true;
+                                }
+                            }
+                            if !found {
+                                return Err(ShellError::CantFindColumn(*span, *v_span));
+                            }
+                            Ok(())
+                        }
+                        v => Err(ShellError::CantFindColumn(*span, v.span()?)),
+                    },
+                    PathMember::Int { val: row_num, span } => match self {
+                        Value::List { vals, .. } => {
+                            if vals.get_mut(*row_num).is_some() {
+                                vals.remove(*row_num);
+                                Ok(())
+                            } else if vals.is_empty() {
+                                Err(ShellError::AccessEmptyContent(*span))
+                            } else {
+                                Err(ShellError::AccessBeyondEnd(vals.len() - 1, *span))
+                            }
+                        }
+                        v => Err(ShellError::NotAList(*span, v.span()?)),
+                    },
+                }
+            }
+            _ => {
+                let path_member = cell_path.first().expect("there is a first");
+                match path_member {
+                    PathMember::String {
+                        val: col_name,
+                        span,
+                    } => match self {
+                        Value::List { vals, .. } => {
+                            for val in vals.iter_mut() {
+                                match val {
+                                    Value::Record {
+                                        cols,
+                                        vals,
+                                        span: v_span,
+                                    } => {
+                                        let mut found = false;
+                                        for col in cols.iter().zip(vals.iter_mut()) {
+                                            if col.0 == col_name {
+                                                found = true;
+                                                col.1.remove_data_at_cell_path(&cell_path[1..])?
+                                            }
+                                        }
+                                        if !found {
+                                            return Err(ShellError::CantFindColumn(*span, *v_span));
+                                        }
+                                    }
+                                    v => return Err(ShellError::CantFindColumn(*span, v.span()?)),
+                                }
+                            }
+                            Ok(())
+                        }
+                        Value::Record {
+                            cols,
+                            vals,
+                            span: v_span,
+                        } => {
+                            let mut found = false;
+
+                            for col in cols.iter().zip(vals.iter_mut()) {
+                                if col.0 == col_name {
+                                    found = true;
+
+                                    col.1.remove_data_at_cell_path(&cell_path[1..])?
+                                }
+                            }
+                            if !found {
+                                return Err(ShellError::CantFindColumn(*span, *v_span));
+                            }
+                            Ok(())
+                        }
+                        v => Err(ShellError::CantFindColumn(*span, v.span()?)),
+                    },
+                    PathMember::Int { val: row_num, span } => match self {
+                        Value::List { vals, .. } => {
+                            if let Some(v) = vals.get_mut(*row_num) {
+                                v.remove_data_at_cell_path(&cell_path[1..])
+                            } else if vals.is_empty() {
+                                Err(ShellError::AccessEmptyContent(*span))
+                            } else {
+                                Err(ShellError::AccessBeyondEnd(vals.len() - 1, *span))
+                            }
+                        }
+                        v => Err(ShellError::NotAList(*span, v.span()?)),
+                    },
+                }
+            }
+        }
     }
 
     pub fn insert_data_at_cell_path(
@@ -1003,8 +1169,10 @@ impl Value {
                     Value::List { vals, .. } => {
                         if let Some(v) = vals.get_mut(*row_num) {
                             v.insert_data_at_cell_path(&cell_path[1..], new_val)?
+                        } else if vals.is_empty() {
+                            return Err(ShellError::AccessEmptyContent(*span));
                         } else {
-                            return Err(ShellError::AccessBeyondEnd(vals.len(), *span));
+                            return Err(ShellError::AccessBeyondEnd(vals.len() - 1, *span));
                         }
                     }
                     v => return Err(ShellError::NotAList(*span, v.span()?)),
@@ -1019,6 +1187,10 @@ impl Value {
 
     pub fn is_true(&self) -> bool {
         matches!(self, Value::Bool { val: true, .. })
+    }
+
+    pub fn is_false(&self) -> bool {
+        matches!(self, Value::Bool { val: false, .. })
     }
 
     pub fn columns(&self) -> Vec<String> {
@@ -1124,12 +1296,6 @@ impl Default for Value {
         Value::Nothing {
             span: Span { start: 0, end: 0 },
         }
-    }
-}
-
-impl From<Value> for (Value, Option<ValueFormatter>) {
-    fn from(val: Value) -> Self {
-        (val, None)
     }
 }
 
@@ -1527,6 +1693,35 @@ impl Value {
             }),
         }
     }
+
+    pub fn append(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
+        match (self, rhs) {
+            (Value::List { vals: lhs, .. }, Value::List { vals: rhs, .. }) => {
+                let mut lhs = lhs.clone();
+                let mut rhs = rhs.clone();
+                lhs.append(&mut rhs);
+                Ok(Value::List { vals: lhs, span })
+            }
+            (Value::List { vals: lhs, .. }, val) => {
+                let mut lhs = lhs.clone();
+                lhs.push(val.clone());
+                Ok(Value::List { vals: lhs, span })
+            }
+            (val, Value::List { vals: rhs, .. }) => {
+                let mut rhs = rhs.clone();
+                rhs.insert(0, val.clone());
+                Ok(Value::List { vals: rhs, span })
+            }
+            _ => Err(ShellError::OperatorMismatch {
+                op_span: op,
+                lhs_ty: self.get_type(),
+                lhs_span: self.span()?,
+                rhs_ty: rhs.get_type(),
+                rhs_span: rhs.span()?,
+            }),
+        }
+    }
+
     pub fn sub(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
         match (self, rhs) {
             (Value::Int { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
@@ -1605,6 +1800,7 @@ impl Value {
             }),
         }
     }
+
     pub fn mul(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
         match (self, rhs) {
             (Value::Int { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
@@ -1641,6 +1837,18 @@ impl Value {
                     span,
                 })
             }
+            (Value::Float { val: lhs, .. }, Value::Filesize { val: rhs, .. }) => {
+                Ok(Value::Filesize {
+                    val: (*lhs * *rhs as f64) as i64,
+                    span,
+                })
+            }
+            (Value::Filesize { val: lhs, .. }, Value::Float { val: rhs, .. }) => {
+                Ok(Value::Filesize {
+                    val: (*lhs as f64 * *rhs) as i64,
+                    span,
+                })
+            }
             (Value::Int { val: lhs, .. }, Value::Duration { val: rhs, .. }) => {
                 Ok(Value::Duration {
                     val: *lhs * *rhs,
@@ -1650,6 +1858,18 @@ impl Value {
             (Value::Duration { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
                 Ok(Value::Duration {
                     val: *lhs * *rhs,
+                    span,
+                })
+            }
+            (Value::Duration { val: lhs, .. }, Value::Float { val: rhs, .. }) => {
+                Ok(Value::Duration {
+                    val: (*lhs as f64 * *rhs) as i64,
+                    span,
+                })
+            }
+            (Value::Float { val: lhs, .. }, Value::Duration { val: rhs, .. }) => {
+                Ok(Value::Duration {
+                    val: (*lhs * *rhs as f64) as i64,
                     span,
                 })
             }
@@ -1666,6 +1886,7 @@ impl Value {
             }),
         }
     }
+
     pub fn div(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
         match (self, rhs) {
             (Value::Int { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
@@ -1732,6 +1953,26 @@ impl Value {
                     Err(ShellError::DivisionByZero(op))
                 }
             }
+            (Value::Filesize { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
+                if *rhs != 0 {
+                    Ok(Value::Filesize {
+                        val: ((*lhs as f64) / (*rhs as f64)) as i64,
+                        span,
+                    })
+                } else {
+                    Err(ShellError::DivisionByZero(op))
+                }
+            }
+            (Value::Filesize { val: lhs, .. }, Value::Float { val: rhs, .. }) => {
+                if *rhs != 0.0 {
+                    Ok(Value::Filesize {
+                        val: (*lhs as f64 / rhs) as i64,
+                        span,
+                    })
+                } else {
+                    Err(ShellError::DivisionByZero(op))
+                }
+            }
             (Value::Duration { val: lhs, .. }, Value::Duration { val: rhs, .. }) => {
                 if *rhs != 0 {
                     if lhs % rhs == 0 {
@@ -1749,20 +1990,20 @@ impl Value {
                     Err(ShellError::DivisionByZero(op))
                 }
             }
-            (Value::Filesize { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
+            (Value::Duration { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
                 if *rhs != 0 {
-                    Ok(Value::Filesize {
-                        val: lhs / rhs,
+                    Ok(Value::Duration {
+                        val: ((*lhs as f64) / (*rhs as f64)) as i64,
                         span,
                     })
                 } else {
                     Err(ShellError::DivisionByZero(op))
                 }
             }
-            (Value::Duration { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
-                if *rhs != 0 {
+            (Value::Duration { val: lhs, .. }, Value::Float { val: rhs, .. }) => {
+                if *rhs != 0.0 {
                     Ok(Value::Duration {
-                        val: lhs / rhs,
+                        val: ((*lhs as f64) / rhs) as i64,
                         span,
                     })
                 } else {
@@ -1782,6 +2023,7 @@ impl Value {
             }),
         }
     }
+
     pub fn floor_div(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
         match (self, rhs) {
             (Value::Int { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
@@ -1849,6 +2091,32 @@ impl Value {
                     Err(ShellError::DivisionByZero(op))
                 }
             }
+            (Value::Filesize { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
+                if *rhs != 0 {
+                    Ok(Value::Filesize {
+                        val: ((*lhs as f64) / (*rhs as f64))
+                            .max(std::i64::MIN as f64)
+                            .min(std::i64::MAX as f64)
+                            .floor() as i64,
+                        span,
+                    })
+                } else {
+                    Err(ShellError::DivisionByZero(op))
+                }
+            }
+            (Value::Filesize { val: lhs, .. }, Value::Float { val: rhs, .. }) => {
+                if *rhs != 0.0 {
+                    Ok(Value::Filesize {
+                        val: (*lhs as f64 / *rhs)
+                            .max(std::i64::MIN as f64)
+                            .min(std::i64::MAX as f64)
+                            .floor() as i64,
+                        span,
+                    })
+                } else {
+                    Err(ShellError::DivisionByZero(op))
+                }
+            }
             (Value::Duration { val: lhs, .. }, Value::Duration { val: rhs, .. }) => {
                 if *rhs != 0 {
                     Ok(Value::Int {
@@ -1862,20 +2130,26 @@ impl Value {
                     Err(ShellError::DivisionByZero(op))
                 }
             }
-            (Value::Filesize { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
+            (Value::Duration { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
                 if *rhs != 0 {
-                    Ok(Value::Filesize {
-                        val: lhs / rhs,
+                    Ok(Value::Duration {
+                        val: (*lhs as f64 / *rhs as f64)
+                            .max(std::i64::MIN as f64)
+                            .min(std::i64::MAX as f64)
+                            .floor() as i64,
                         span,
                     })
                 } else {
                     Err(ShellError::DivisionByZero(op))
                 }
             }
-            (Value::Duration { val: lhs, .. }, Value::Int { val: rhs, .. }) => {
-                if *rhs != 0 {
+            (Value::Duration { val: lhs, .. }, Value::Float { val: rhs, .. }) => {
+                if *rhs != 0.0 {
                     Ok(Value::Duration {
-                        val: lhs / rhs,
+                        val: (*lhs as f64 / *rhs)
+                            .max(std::i64::MIN as f64)
+                            .min(std::i64::MAX as f64)
+                            .floor() as i64,
                         span,
                     })
                 } else {
@@ -1895,6 +2169,7 @@ impl Value {
             }),
         }
     }
+
     pub fn lt(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
         if let (Value::CustomValue { val: lhs, span }, rhs) = (self, rhs) {
             return lhs.operation(*span, Operator::LessThan, op, rhs);
@@ -1921,6 +2196,7 @@ impl Value {
             }),
         }
     }
+
     pub fn lte(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
         if let (Value::CustomValue { val: lhs, span }, rhs) = (self, rhs) {
             return lhs.operation(*span, Operator::LessThanOrEqual, op, rhs);
@@ -1947,6 +2223,7 @@ impl Value {
             }),
         }
     }
+
     pub fn gt(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
         if let (Value::CustomValue { val: lhs, span }, rhs) = (self, rhs) {
             return lhs.operation(*span, Operator::GreaterThan, op, rhs);
@@ -1973,6 +2250,7 @@ impl Value {
             }),
         }
     }
+
     pub fn gte(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
         if let (Value::CustomValue { val: lhs, span }, rhs) = (self, rhs) {
             return lhs.operation(*span, Operator::GreaterThanOrEqual, op, rhs);
@@ -1999,6 +2277,7 @@ impl Value {
             }),
         }
     }
+
     pub fn eq(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
         if let (Value::CustomValue { val: lhs, span }, rhs) = (self, rhs) {
             return lhs.operation(*span, Operator::Equal, op, rhs);
@@ -2023,6 +2302,7 @@ impl Value {
             },
         }
     }
+
     pub fn ne(&self, op: Span, rhs: &Value, span: Span) -> Result<Value, ShellError> {
         if let (Value::CustomValue { val: lhs, span }, rhs) = (self, rhs) {
             return lhs.operation(*span, Operator::NotEqual, op, rhs);

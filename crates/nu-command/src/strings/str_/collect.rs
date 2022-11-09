@@ -21,15 +21,11 @@ impl Command for StrCollect {
                 SyntaxShape::String,
                 "optional separator to use when creating string",
             )
-            .category(Category::Strings)
+            .category(Category::Deprecated)
     }
 
     fn usage(&self) -> &str {
-        "Concatenate multiple strings into a single string, with an optional separator between each"
-    }
-
-    fn search_terms(&self) -> Vec<&str> {
-        vec!["join", "concatenate"]
+        "'str collect' is deprecated. Please use 'str join' instead."
     }
 
     fn run(

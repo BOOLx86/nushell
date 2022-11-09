@@ -1,9 +1,10 @@
+use super::utils::chain_error_with_input;
 use nu_engine::{eval_block, CallExt};
 use nu_protocol::ast::Call;
 use nu_protocol::engine::{CaptureBlock, Command, EngineState, Stack};
 use nu_protocol::{
     Category, Example, IntoInterruptiblePipelineData, IntoPipelineData, PipelineData, ShellError,
-    Signature, Span, SyntaxShape, Value,
+    Signature, SyntaxShape, Value,
 };
 
 #[derive(Clone)]
@@ -83,7 +84,9 @@ impl Command for Where {
                                     None
                                 }
                             }
-                            Err(error) => Some(Value::Error { error }),
+                            Err(error) => Some(Value::Error {
+                                error: chain_error_with_input(error, x.span()),
+                            }),
                         }
                     })
                     .into_pipeline_data(ctrlc)),
@@ -124,7 +127,9 @@ impl Command for Where {
                                     None
                                 }
                             }
-                            Err(error) => Some(Value::Error { error }),
+                            Err(error) => Some(Value::Error {
+                                error: chain_error_with_input(error, x.span()),
+                            }),
                         }
                     })
                     .into_pipeline_data(ctrlc)),
@@ -149,7 +154,9 @@ impl Command for Where {
                                 None
                             }
                         }
-                        Err(error) => Some(Value::Error { error }),
+                        Err(error) => Some(Value::Error {
+                            error: chain_error_with_input(error, x.span()),
+                        }),
                     }
                     .into_pipeline_data(ctrlc))
                 }
@@ -231,23 +238,37 @@ impl Command for Where {
                 example: "ls | where modified >= (date now) - 2wk",
                 result: None,
             },
-            Example {
-                description: "Get all numbers above 3 with an existing block condition",
-                example: "let a = {$in > 3}; [1, 2, 5, 6] | where -b $a",
-                result: Some(Value::List {
-                    vals: vec![
-                        Value::Int {
-                            val: 5,
-                            span: Span::test_data(),
-                        },
-                        Value::Int {
-                            val: 6,
-                            span: Span::test_data(),
-                        },
-                    ],
-                    span: Span::test_data(),
-                }),
-            },
+            // TODO: This should work but does not. (Note that `Let` must be present in the working_set in `example_test.rs`).
+            // See https://github.com/nushell/nushell/issues/7034
+            // Example {
+            //     description: "Get all numbers above 3 with an existing block condition",
+            //     example: "let a = {$in > 3}; [1, 2, 5, 6] | where -b $a",
+            //     result: Some(Value::List {
+            //         vals: vec![
+            //             Value::Int {
+            //                 val: 5,
+            //                 span: Span::test_data(),
+            //             },
+            //             Value::Int {
+            //                 val: 6,
+            //                 span: Span::test_data(),
+            //             },
+            //         ],
+            //         span: Span::test_data(),
+            //     }),
+            // },
         ]
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_examples() {
+        use crate::test_examples;
+
+        test_examples(Where {})
     }
 }

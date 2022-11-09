@@ -68,6 +68,35 @@ pub fn math_result_type(
                     )
                 }
             },
+            Operator::Append => match (&lhs.ty, &rhs.ty) {
+                (Type::List(a), Type::List(b)) => {
+                    if a == b {
+                        (Type::List(a.clone()), None)
+                    } else {
+                        (Type::List(Box::new(Type::Any)), None)
+                    }
+                }
+                (Type::List(a), b) | (b, Type::List(a)) => {
+                    if a == &Box::new(b.clone()) {
+                        (Type::List(a.clone()), None)
+                    } else {
+                        (Type::List(Box::new(Type::Any)), None)
+                    }
+                }
+                _ => {
+                    *op = Expression::garbage(op.span);
+                    (
+                        Type::Any,
+                        Some(ParseError::UnsupportedOperation(
+                            op.span,
+                            lhs.span,
+                            lhs.ty.clone(),
+                            rhs.span,
+                            rhs.ty.clone(),
+                        )),
+                    )
+                }
+            },
             Operator::Minus => match (&lhs.ty, &rhs.ty) {
                 (Type::Int, Type::Int) => (Type::Int, None),
                 (Type::Float, Type::Int) => (Type::Float, None),
@@ -101,11 +130,14 @@ pub fn math_result_type(
                 (Type::Float, Type::Int) => (Type::Float, None),
                 (Type::Int, Type::Float) => (Type::Float, None),
                 (Type::Float, Type::Float) => (Type::Float, None),
-
                 (Type::Filesize, Type::Int) => (Type::Filesize, None),
                 (Type::Int, Type::Filesize) => (Type::Filesize, None),
-                (Type::Duration, Type::Int) => (Type::Filesize, None),
-                (Type::Int, Type::Duration) => (Type::Filesize, None),
+                (Type::Filesize, Type::Float) => (Type::Filesize, None),
+                (Type::Float, Type::Filesize) => (Type::Filesize, None),
+                (Type::Duration, Type::Int) => (Type::Duration, None),
+                (Type::Int, Type::Duration) => (Type::Duration, None),
+                (Type::Duration, Type::Float) => (Type::Duration, None),
+                (Type::Float, Type::Duration) => (Type::Duration, None),
 
                 (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.to_string()), None),
                 (Type::Custom(a), _) => (Type::Custom(a.to_string()), None),
@@ -157,10 +189,11 @@ pub fn math_result_type(
                 (Type::Int, Type::Float) => (Type::Float, None),
                 (Type::Float, Type::Float) => (Type::Float, None),
                 (Type::Filesize, Type::Filesize) => (Type::Float, None),
-                (Type::Duration, Type::Duration) => (Type::Float, None),
-
                 (Type::Filesize, Type::Int) => (Type::Filesize, None),
+                (Type::Filesize, Type::Float) => (Type::Filesize, None),
+                (Type::Duration, Type::Duration) => (Type::Float, None),
                 (Type::Duration, Type::Int) => (Type::Duration, None),
+                (Type::Duration, Type::Float) => (Type::Duration, None),
 
                 (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.to_string()), None),
                 (Type::Custom(a), _) => (Type::Custom(a.to_string()), None),
@@ -187,10 +220,11 @@ pub fn math_result_type(
                 (Type::Int, Type::Float) => (Type::Int, None),
                 (Type::Float, Type::Float) => (Type::Int, None),
                 (Type::Filesize, Type::Filesize) => (Type::Int, None),
-                (Type::Duration, Type::Duration) => (Type::Int, None),
-
                 (Type::Filesize, Type::Int) => (Type::Filesize, None),
+                (Type::Filesize, Type::Float) => (Type::Filesize, None),
+                (Type::Duration, Type::Duration) => (Type::Int, None),
                 (Type::Duration, Type::Int) => (Type::Duration, None),
+                (Type::Duration, Type::Float) => (Type::Duration, None),
 
                 (Type::Any, _) => (Type::Any, None),
                 (_, Type::Any) => (Type::Any, None),

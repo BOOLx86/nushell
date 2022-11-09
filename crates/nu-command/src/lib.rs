@@ -15,6 +15,7 @@ mod filters;
 mod formats;
 mod generators;
 mod hash;
+mod input_handler;
 mod math;
 mod misc;
 mod network;

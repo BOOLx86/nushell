@@ -64,7 +64,7 @@ fn subexpression_properly_redirects() {
     let actual = nu!(
         cwd: ".",
         r#"
-            echo (nu --testbin cococo "hello") | str collect
+            echo (nu --testbin cococo "hello") | str join
         "#
     );
 
@@ -191,7 +191,7 @@ fn run_custom_command_with_flag() {
     let actual = nu!(
         cwd: ".",
         r#"
-        def foo [--bar:number] { if ($bar | empty?) { echo "empty" } else { echo $bar } }; foo --bar 10
+        def foo [--bar:number] { if ($bar | is-empty) { echo "empty" } else { echo $bar } }; foo --bar 10
         "#
     );
 
@@ -203,7 +203,7 @@ fn run_custom_command_with_flag_missing() {
     let actual = nu!(
         cwd: ".",
         r#"
-        def foo [--bar:number] { if ($bar | empty?) { echo "empty" } else { echo $bar } }; foo
+        def foo [--bar:number] { if ($bar | is-empty) { echo "empty" } else { echo $bar } }; foo
         "#
     );
 
@@ -215,7 +215,7 @@ fn run_custom_subcommand() {
     let actual = nu!(
         cwd: ".",
         r#"
-        def "str double" [x] { echo $x $x | str collect }; str double bob
+        def "str double" [x] { echo $x $x | str join }; str double bob
         "#
     );
 
@@ -306,7 +306,7 @@ fn run_custom_command_with_rest_other_name() {
                 greeting:string,
                 ...names:string # All of the names
                 ] {
-                    echo $"($greeting), ($names | sort-by | str collect)"
+                    echo $"($greeting), ($names | sort-by | str join)"
                 }
             say-hello Salutations E D C A B
         "#
@@ -380,7 +380,7 @@ fn let_env_hides_variable() {
     );
 
     assert_eq!(actual.out, "hello world");
-    assert!(actual.err.contains("did you mean"));
+    assert!(actual.err.contains("cannot find column"));
 }
 
 #[test]
@@ -399,7 +399,7 @@ fn let_env_hides_variable_in_parent_scope() {
     );
 
     assert_eq!(actual.out, "hello world");
-    assert!(actual.err.contains("did you mean"));
+    assert!(actual.err.contains("cannot find column"));
 }
 
 #[test]
@@ -412,7 +412,7 @@ fn unlet_env_variable() {
             echo $env.TEST_VAR
         "#
     );
-    assert!(actual.err.contains("did you mean"));
+    assert!(actual.err.contains("cannot find column"));
 }
 
 #[test]
@@ -457,7 +457,7 @@ fn let_env_doesnt_leak() {
         "#
     );
 
-    assert!(actual.err.contains("did you mean"));
+    assert!(actual.err.contains("cannot find column"));
 }
 
 #[test]
@@ -506,7 +506,7 @@ fn load_env_doesnt_leak() {
         "#
     );
 
-    assert!(actual.err.contains("did you mean"));
+    assert!(actual.err.contains("cannot find column"));
 }
 
 #[test]
@@ -662,7 +662,7 @@ fn argument_subexpression_reports_errors() {
 fn can_process_one_row_from_internal_and_pipes_it_to_stdin_of_external() {
     let actual = nu!(
         cwd: ".",
-        r#"echo "nushelll" | nu --testbin chop"#
+        r#""nushelll" | nu --testbin chop"#
     );
 
     assert_eq!(actual.out, "nushell");
@@ -1219,7 +1219,7 @@ fn hide_alias_hides_alias() {
         "#)
     );
 
-    assert!(actual.err.contains("did you mean"));
+    assert!(actual.err.contains("did you mean 'all'?"));
 }
 
 mod parse {
@@ -1232,7 +1232,7 @@ mod parse {
         > debug {flags}
 
         flags:
-        -h, --help: Display this help message
+        -h, --help: Display the help message for this command
         -r, --raw: Prints the raw value representation.
     */
 

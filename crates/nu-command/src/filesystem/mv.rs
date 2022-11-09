@@ -20,7 +20,6 @@ const GLOB_PARAMS: nu_glob::MatchOptions = nu_glob::MatchOptions {
 #[derive(Clone)]
 pub struct Mv;
 
-#[allow(unused_must_use)]
 impl Command for Mv {
     fn name(&self) -> &str {
         "mv"
@@ -31,7 +30,7 @@ impl Command for Mv {
     }
 
     fn search_terms(&self) -> Vec<&str> {
-        vec!["mv", "move"]
+        vec!["move"]
     }
 
     fn signature(&self) -> nu_protocol::Signature {
@@ -51,8 +50,8 @@ impl Command for Mv {
                 "make mv to be verbose, showing files been moved.",
                 Some('v'),
             )
+            .switch("force", "overwrite the destination.", Some('f'))
             .switch("interactive", "ask user to confirm action", Some('i'))
-            // .switch("force", "suppress error when no file", Some('f'))
             .category(Category::FileSystem)
     }
 
@@ -67,17 +66,14 @@ impl Command for Mv {
         let spanned_source: Spanned<String> = call.req(engine_state, stack, 0)?;
         let spanned_source = {
             Spanned {
-                item: match strip_ansi_escapes::strip(&spanned_source.item) {
-                    Ok(item) => String::from_utf8(item).unwrap_or(spanned_source.item),
-                    Err(_) => spanned_source.item,
-                },
+                item: nu_utils::strip_ansi_string_unlikely(spanned_source.item),
                 span: spanned_source.span,
             }
         };
         let spanned_destination: Spanned<String> = call.req(engine_state, stack, 1)?;
         let verbose = call.has_flag("verbose");
         let interactive = call.has_flag("interactive");
-        // let force = call.has_flag("force");
+        let force = call.has_flag("force");
 
         let ctrlc = engine_state.ctrlc.clone();
 
@@ -102,11 +98,21 @@ impl Command for Mv {
         //
         // First, the destination exists.
         //  - If a directory, move everything into that directory, otherwise
-        //  - if only a single source, overwrite the file, otherwise
-        //  - error.
+        //  - if only a single source, and --force (or -f) is provided overwrite the file,
+        //  - otherwise error.
         //
         // Second, the destination doesn't exist, so we can only rename a single source. Otherwise
         // it's an error.
+
+        if destination.exists() && !force && !destination.is_dir() && !source.is_dir() {
+            return Err(ShellError::GenericError(
+                "Destination file already exists".into(),
+                "you can use -f, --force to force overwriting the destination".into(),
+                Some(spanned_destination.span),
+                None,
+                Vec::new(),
+            ));
+        }
 
         if (destination.exists() && !destination.is_dir() && sources.len() > 1)
             || (!destination.exists() && sources.len() > 1)
@@ -154,10 +160,7 @@ impl Command for Mv {
         }
 
         if let Some(Ok(_filename)) = some_if_source_is_destination {
-            sources = sources
-                .into_iter()
-                .filter(|f| matches!(f, Ok(f) if !destination.starts_with(f)))
-                .collect();
+            sources.retain(|f| matches!(f, Ok(f) if !destination.starts_with(f)));
         }
 
         let span = call.head;
@@ -253,8 +256,12 @@ fn move_file(
         return Err(ShellError::DirectoryNotFound(to_span, None));
     }
 
+    // This can happen when changing case on a case-insensitive filesystem (ex: changing foo to Foo on Windows)
+    // When it does, we want to do a plain rename instead of moving `from` into `to`
+    let from_to_are_same_file = same_file::is_same_file(&from, &to).unwrap_or(false);
+
     let mut to = to;
-    if to.is_dir() {
+    if !from_to_are_same_file && to.is_dir() {
         let from_file_name = match from.file_name() {
             Some(name) => name,
             None => return Err(ShellError::DirectoryNotFound(to_span, None)),
@@ -288,7 +295,7 @@ fn move_file(
 fn move_item(from: &Path, from_span: Span, to: &Path) -> Result<(), ShellError> {
     // We first try a rename, which is a quick operation. If that doesn't work, we'll try a copy
     // and remove the old file/folder. This is necessary if we're moving across filesystems or devices.
-    std::fs::rename(&from, &to).or_else(|_| {
+    std::fs::rename(from, to).or_else(|_| {
         match if from.is_file() {
             let mut options = fs_extra::file::CopyOptions::new();
             options.overwrite = true;

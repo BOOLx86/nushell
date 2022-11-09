@@ -110,7 +110,7 @@ fn fragment(input: Value, pretty: bool, config: &Config) -> String {
     let mut out = String::new();
 
     if headers.len() == 1 {
-        let markup = match (&headers[0]).to_ascii_lowercase().as_ref() {
+        let markup = match headers[0].to_ascii_lowercase().as_ref() {
             "h1" => "# ".to_string(),
             "h2" => "## ".to_string(),
             "h3" => "### ".to_string(),
@@ -270,15 +270,10 @@ fn get_output_string(
 
         output_string.push_str("\n|");
 
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..headers.len() {
+        for &col_width in column_widths.iter().take(headers.len()) {
             if pretty {
                 output_string.push(' ');
-                output_string.push_str(&get_padded_string(
-                    String::from("-"),
-                    column_widths[i],
-                    '-',
-                ));
+                output_string.push_str(&get_padded_string(String::from("-"), col_width, '-'));
                 output_string.push(' ');
             } else {
                 output_string.push('-');

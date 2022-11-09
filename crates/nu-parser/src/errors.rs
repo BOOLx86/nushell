@@ -112,6 +112,10 @@ pub enum ParseError {
     #[diagnostic(code(nu::parser::variable_not_valid), url(docsrs))]
     VariableNotValid(#[label = "variable name can't contain spaces or quotes"] Span),
 
+    #[error("Alias name not supported.")]
+    #[diagnostic(code(nu::parser::variable_not_valid), url(docsrs))]
+    AliasNotValid(#[label = "alias name can't be a number or a filesize"] Span),
+
     #[error("Module not found.")]
     #[diagnostic(
         code(nu::parser::module_not_found),
@@ -119,6 +123,10 @@ pub enum ParseError {
         help("module files and their paths must be available before your script is run as parsing occurs before anything is evaluated")
     )]
     ModuleNotFound(#[label = "module not found"] Span),
+
+    #[error("Cyclical module import.")]
+    #[diagnostic(code(nu::parser::cyclical_module_import), url(docsrs), help("{0}"))]
+    CyclicalModuleImport(String, #[label = "detected cyclical module import"] Span),
 
     #[error("Active overlay not found.")]
     #[diagnostic(code(nu::parser::active_overlay_not_found), url(docsrs))]
@@ -152,13 +160,13 @@ pub enum ParseError {
     )]
     CantRemoveLastOverlay(#[label = "this is the last overlay, can't remove it"] Span),
 
-    #[error("Cannot remove default overlay.")]
+    #[error("Cannot hide default overlay.")]
     #[diagnostic(
-        code(nu::parser::cant_remove_default_overlay),
+        code(nu::parser::cant_hide_default_overlay),
         url(docsrs),
-        help("'{0}' is a default overlay. Default overlays cannot be removed.")
+        help("'{0}' is a default overlay. Default overlays cannot be hidden.")
     )]
-    CantRemoveDefaultOverlay(String, #[label = "can't remove overlay"] Span),
+    CantHideDefaultOverlay(String, #[label = "can't hide overlay"] Span),
 
     #[error("Cannot add overlay.")]
     #[diagnostic(code(nu::parser::cant_add_overlay_help), url(docsrs), help("{0}"))]
@@ -340,12 +348,14 @@ impl ParseError {
             ParseError::MultipleRestParams(s) => *s,
             ParseError::VariableNotFound(s) => *s,
             ParseError::VariableNotValid(s) => *s,
+            ParseError::AliasNotValid(s) => *s,
             ParseError::ModuleNotFound(s) => *s,
+            ParseError::CyclicalModuleImport(_, s) => *s,
             ParseError::ModuleOrOverlayNotFound(s) => *s,
             ParseError::ActiveOverlayNotFound(s) => *s,
             ParseError::OverlayPrefixMismatch(_, _, s) => *s,
             ParseError::CantRemoveLastOverlay(s) => *s,
-            ParseError::CantRemoveDefaultOverlay(_, s) => *s,
+            ParseError::CantHideDefaultOverlay(_, s) => *s,
             ParseError::CantAddOverlayHelp(_, s) => *s,
             ParseError::NotFound(s) => *s,
             ParseError::DuplicateCommandDef(s) => *s,

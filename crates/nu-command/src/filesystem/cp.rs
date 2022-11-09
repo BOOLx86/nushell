@@ -25,7 +25,6 @@ const GLOB_PARAMS: nu_glob::MatchOptions = nu_glob::MatchOptions {
 #[derive(Clone)]
 pub struct Cp;
 
-#[allow(unused_must_use)]
 impl Command for Cp {
     fn name(&self) -> &str {
         "cp"
@@ -36,7 +35,7 @@ impl Command for Cp {
     }
 
     fn search_terms(&self) -> Vec<&str> {
-        vec!["cp", "copy", "file", "files"]
+        vec!["copy", "file", "files"]
     }
 
     fn signature(&self) -> Signature {
@@ -50,7 +49,7 @@ impl Command for Cp {
             )
             .switch(
                 "verbose",
-                "do copy in verbose mode (default:false)",
+                "show successful copies in addition to failed copies (default:false)",
                 Some('v'),
             )
             // TODO: add back in additional features
@@ -74,10 +73,7 @@ impl Command for Cp {
         let src: Spanned<String> = call.req(engine_state, stack, 0)?;
         let src = {
             Spanned {
-                item: match strip_ansi_escapes::strip(&src.item) {
-                    Ok(item) => String::from_utf8(item).unwrap_or(src.item),
-                    Err(_) => src.item,
-                },
+                item: nu_utils::strip_ansi_string_unlikely(src.item),
                 span: src.span,
             }
         };
@@ -285,7 +281,11 @@ impl Command for Cp {
         if verbose {
             Ok(result.into_iter().into_pipeline_data(ctrlc))
         } else {
-            Ok(PipelineData::new(span))
+            // filter to only errors
+            Ok(result
+                .into_iter()
+                .filter(|v| matches!(v, Value::Error { .. }))
+                .into_pipeline_data(ctrlc))
         }
     }
 
@@ -348,9 +348,22 @@ fn copy_file(src: PathBuf, dst: PathBuf, span: Span) -> Value {
             let msg = format!("copied {:} to {:}", src.display(), dst.display());
             Value::String { val: msg, span }
         }
-        Err(e) => Value::Error {
-            error: ShellError::FileNotFoundCustom(format!("copy file {src:?} failed: {e}"), span),
-        },
+        Err(e) => {
+            let message = format!("copy file {src:?} failed: {e}");
+
+            use std::io::ErrorKind;
+            let shell_error = match e.kind() {
+                ErrorKind::NotFound => ShellError::FileNotFoundCustom(message, span),
+                ErrorKind::PermissionDenied => ShellError::PermissionDeniedError(message, span),
+                ErrorKind::Interrupted => ShellError::IOInterrupted(message, span),
+                ErrorKind::OutOfMemory => ShellError::OutOfMemoryError(message, span),
+                // TODO: handle ExecutableFileBusy etc. when io_error_more is stabilized
+                // https://github.com/rust-lang/rust/issues/86442
+                _ => ShellError::IOErrorSpanned(message, span),
+            };
+
+            Value::Error { error: shell_error }
+        }
     }
 }
 

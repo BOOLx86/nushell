@@ -32,6 +32,7 @@ pub struct Hooks {
     pub pre_prompt: Option<Value>,
     pub pre_execution: Option<Value>,
     pub env_change: Option<Value>,
+    pub display_output: Option<Value>,
 }
 
 impl Hooks {
@@ -40,6 +41,7 @@ impl Hooks {
             pre_prompt: None,
             pre_execution: None,
             env_change: None,
+            display_output: None,
         }
     }
 }
@@ -52,6 +54,7 @@ impl Default for Hooks {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Config {
+    pub external_completer: Option<usize>,
     pub filesize_metric: bool,
     pub table_mode: String,
     pub use_ls_colors: bool,
@@ -76,13 +79,14 @@ pub struct Config {
     pub rm_always_trash: bool,
     pub shell_integration: bool,
     pub buffer_editor: String,
-    pub disable_table_indexes: bool,
+    pub table_index_mode: TableIndexMode,
     pub cd_with_abbreviations: bool,
     pub case_sensitive_completions: bool,
     pub enable_external_completion: bool,
     pub trim_strategy: TrimStrategy,
     pub show_banner: bool,
     pub show_clickable_links_in_ls: bool,
+    pub render_right_prompt_on_last_line: bool,
 }
 
 impl Default for Config {
@@ -90,6 +94,7 @@ impl Default for Config {
         Config {
             filesize_metric: false,
             table_mode: "rounded".into(),
+            external_completer: None,
             use_ls_colors: true,
             color_config: HashMap::new(),
             use_grid_icons: false,
@@ -112,13 +117,14 @@ impl Default for Config {
             rm_always_trash: false,
             shell_integration: false,
             buffer_editor: String::new(),
-            disable_table_indexes: false,
+            table_index_mode: TableIndexMode::Always,
             cd_with_abbreviations: false,
             case_sensitive_completions: false,
             enable_external_completion: true,
             trim_strategy: TRIM_STRATEGY_DEFAULT,
             show_banner: true,
             show_clickable_links_in_ls: true,
+            render_right_prompt_on_last_line: false,
         }
     }
 }
@@ -141,6 +147,16 @@ pub enum HistoryFileFormat {
     Sqlite,
     /// store history as a plain text file where every line is one command (without any context such as timestamps)
     PlainText,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum TableIndexMode {
+    /// Always show indexes
+    Always,
+    /// Never show indexes
+    Never,
+    /// Show indexes when a table has "index" column
+    Auto,
 }
 
 /// A Table view configuration, for a situation where
@@ -181,6 +197,11 @@ impl Value {
                             config.filesize_metric = b;
                         } else {
                             eprintln!("$config.filesize_metric is not a bool")
+                        }
+                    }
+                    "external_completer" => {
+                        if let Ok(v) = value.as_block() {
+                            config.external_completer = Some(v)
                         }
                     }
                     "table_mode" => {
@@ -328,14 +349,14 @@ impl Value {
                             eprintln!("$config.log_level is not a string")
                         }
                     }
-                    "menus" => match create_menus(value, &config) {
+                    "menus" => match create_menus(value) {
                         Ok(map) => config.menus = map,
                         Err(e) => {
                             eprintln!("$config.menus is not a valid list of menus");
                             eprintln!("{:?}", e);
                         }
                     },
-                    "keybindings" => match create_keybindings(value, &config) {
+                    "keybindings" => match create_keybindings(value) {
                         Ok(keybindings) => config.keybindings = keybindings,
                         Err(e) => {
                             eprintln!("$config.keybindings is not a valid keybindings list");
@@ -363,11 +384,19 @@ impl Value {
                             eprintln!("$config.buffer_editor is not a string")
                         }
                     }
-                    "disable_table_indexes" => {
-                        if let Ok(b) = value.as_bool() {
-                            config.disable_table_indexes = b;
+                    "table_index_mode" => {
+                        if let Ok(b) = value.as_string() {
+                            let val_str = b.to_lowercase();
+                            match val_str.as_ref() {
+                                "always" => config.table_index_mode = TableIndexMode::Always,
+                                "never" => config.table_index_mode = TableIndexMode::Never,
+                                "auto" => config.table_index_mode = TableIndexMode::Auto,
+                                _ => eprintln!(
+                                    "$config.table_index_mode must be a never, always or auto"
+                                ),
+                            }
                         } else {
-                            eprintln!("$config.disable_table_indexes is not a bool")
+                            eprintln!("$config.table_index_mode is not a string")
                         }
                     }
                     "cd_with_abbreviations" => {
@@ -404,6 +433,13 @@ impl Value {
                             config.show_clickable_links_in_ls = b;
                         } else {
                             eprintln!("$config.show_clickable_links_in_ls is not a bool")
+                        }
+                    }
+                    "render_right_prompt_on_last_line" => {
+                        if let Ok(b) = value.as_bool() {
+                            config.render_right_prompt_on_last_line = b;
+                        } else {
+                            eprintln!("$config.render_right_prompt_on_last_line is not a bool")
                         }
                     }
                     x => {
@@ -537,9 +573,10 @@ fn create_hooks(value: &Value) -> Result<Hooks, ShellError> {
                     "pre_prompt" => hooks.pre_prompt = Some(vals[idx].clone()),
                     "pre_execution" => hooks.pre_execution = Some(vals[idx].clone()),
                     "env_change" => hooks.env_change = Some(vals[idx].clone()),
+                    "display_output" => hooks.display_output = Some(vals[idx].clone()),
                     x => {
                         return Err(ShellError::UnsupportedConfigValue(
-                            "'pre_prompt', 'pre_execution', or 'env_change'".to_string(),
+                            "'pre_prompt', 'pre_execution', 'env_change'".to_string(),
                             x.to_string(),
                             *span,
                         ));
@@ -565,7 +602,7 @@ fn create_hooks(value: &Value) -> Result<Hooks, ShellError> {
 }
 
 // Parses the config object to extract the strings that will compose a keybinding for reedline
-fn create_keybindings(value: &Value, config: &Config) -> Result<Vec<ParsedKeybinding>, ShellError> {
+fn create_keybindings(value: &Value) -> Result<Vec<ParsedKeybinding>, ShellError> {
     match value {
         Value::Record { cols, vals, span } => {
             // Finding the modifier value in the record
@@ -587,7 +624,7 @@ fn create_keybindings(value: &Value, config: &Config) -> Result<Vec<ParsedKeybin
         Value::List { vals, .. } => {
             let res = vals
                 .iter()
-                .map(|inner_value| create_keybindings(inner_value, config))
+                .map(create_keybindings)
                 .collect::<Result<Vec<Vec<ParsedKeybinding>>, ShellError>>();
 
             let res = res?
@@ -602,7 +639,7 @@ fn create_keybindings(value: &Value, config: &Config) -> Result<Vec<ParsedKeybin
 }
 
 // Parses the config object to extract the strings that will compose a keybinding for reedline
-pub fn create_menus(value: &Value, config: &Config) -> Result<Vec<ParsedMenu>, ShellError> {
+pub fn create_menus(value: &Value) -> Result<Vec<ParsedMenu>, ShellError> {
     match value {
         Value::Record { cols, vals, span } => {
             // Finding the modifier value in the record
@@ -633,7 +670,7 @@ pub fn create_menus(value: &Value, config: &Config) -> Result<Vec<ParsedMenu>, S
         Value::List { vals, .. } => {
             let res = vals
                 .iter()
-                .map(|inner_value| create_menus(inner_value, config))
+                .map(create_menus)
                 .collect::<Result<Vec<Vec<ParsedMenu>>, ShellError>>();
 
             let res = res?.into_iter().flatten().collect::<Vec<ParsedMenu>>();

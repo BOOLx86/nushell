@@ -11,17 +11,19 @@ use log::{info, trace, warn};
 use miette::{IntoDiagnostic, Result};
 use nu_color_config::get_color_config;
 use nu_engine::{convert_env_values, eval_block};
-use nu_parser::{lex, parse};
+use nu_parser::{lex, parse, trim_quotes_str};
 use nu_protocol::{
     ast::PathMember,
-    engine::{EngineState, Stack, StateWorkingSet},
+    engine::{EngineState, ReplOperation, Stack, StateWorkingSet},
     format_duration, BlockId, HistoryFileFormat, PipelineData, PositionalArg, ShellError, Span,
     Spanned, Type, Value, VarId,
 };
-use reedline::{DefaultHinter, Emacs, SqliteBackedHistory, Vi};
-use std::io::{self, Write};
-use std::{sync::atomic::Ordering, time::Instant};
-use strip_ansi_escapes::strip;
+use reedline::{DefaultHinter, EditCommand, Emacs, SqliteBackedHistory, Vi};
+use std::{
+    io::{self, Write},
+    sync::atomic::Ordering,
+    time::Instant,
+};
 use sysinfo::SystemExt;
 
 // According to Daniel Imms @Tyriar, we need to do these this way:
@@ -38,23 +40,30 @@ pub fn evaluate_repl(
     engine_state: &mut EngineState,
     stack: &mut Stack,
     nushell_path: &str,
-    is_perf_true: bool,
     prerun_command: Option<Spanned<String>>,
 ) -> Result<()> {
     use reedline::{FileBackedHistory, Reedline, Signal};
+
+    // Guard against invocation without a connected terminal.
+    // reedline / crossterm event polling will fail without a connected tty
+    if !atty::is(atty::Stream::Stdin) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Nushell launched as a REPL, but STDIN is not a TTY; either launch in a valid terminal or provide arguments to invoke a script!",
+        ))
+        .into_diagnostic();
+    }
 
     let mut entry_num = 0;
 
     let mut nu_prompt = NushellPrompt::new();
 
-    if is_perf_true {
-        info!(
-            "translate environment vars {}:{}:{}",
-            file!(),
-            line!(),
-            column!()
-        );
-    }
+    info!(
+        "translate environment vars {}:{}:{}",
+        file!(),
+        line!(),
+        column!()
+    );
 
     // Translate environment variables from Strings to Values
     if let Some(e) = convert_env_values(engine_state, stack) {
@@ -79,31 +88,32 @@ pub fn evaluate_repl(
         },
     );
 
-    if is_perf_true {
-        info!(
-            "load config initially {}:{}:{}",
-            file!(),
-            line!(),
-            column!()
-        );
-    }
+    info!(
+        "load config initially {}:{}:{}",
+        file!(),
+        line!(),
+        column!()
+    );
 
-    // Get the config once for the history `max_history_size`
-    // Updating that will not be possible in one session
+    info!("setup reedline {}:{}:{}", file!(), line!(), column!());
+
+    let mut line_editor = Reedline::create();
+
+    // Now that reedline is created, get the history session id and store it in engine_state
+    let hist_sesh = match line_editor.get_history_session_id() {
+        Some(id) => i64::from(id),
+        None => 0,
+    };
+    engine_state.history_session_id = hist_sesh;
+
     let config = engine_state.get_config();
 
-    if is_perf_true {
-        info!("setup reedline {}:{}:{}", file!(), line!(), column!());
-    }
-    let mut line_editor = Reedline::create();
     let history_path = crate::config_files::get_history_path(
         nushell_path,
         engine_state.config.history_file_format,
     );
     if let Some(history_path) = history_path.as_deref() {
-        if is_perf_true {
-            info!("setup history {}:{}:{}", file!(), line!(), column!());
-        }
+        info!("setup history {}:{}:{}", file!(), line!(), column!());
 
         let history: Box<dyn reedline::History> = match engine_state.config.history_file_format {
             HistoryFileFormat::PlainText => Box::new(
@@ -129,15 +139,7 @@ pub fn evaluate_repl(
         if use_ansi {
             println!("{}", banner);
         } else {
-            let stripped_string = {
-                if let Ok(bytes) = strip(&banner) {
-                    String::from_utf8_lossy(&bytes).to_string()
-                } else {
-                    banner
-                }
-            };
-
-            println!("{}", stripped_string);
+            println!("{}", nu_utils::strip_ansi_string_likely(banner));
         }
     }
 
@@ -153,14 +155,12 @@ pub fn evaluate_repl(
     }
 
     loop {
-        if is_perf_true {
-            info!(
-                "load config each loop {}:{}:{}",
-                file!(),
-                line!(),
-                column!()
-            );
-        }
+        info!(
+            "load config each loop {}:{}:{}",
+            file!(),
+            line!(),
+            column!()
+        );
 
         let cwd = get_guaranteed_cwd(engine_state, stack);
 
@@ -181,15 +181,11 @@ pub fn evaluate_repl(
 
         let config = engine_state.get_config();
 
-        if is_perf_true {
-            info!("setup colors {}:{}:{}", file!(), line!(), column!());
-        }
+        info!("setup colors {}:{}:{}", file!(), line!(), column!());
 
         let color_hm = get_color_config(config);
 
-        if is_perf_true {
-            info!("update reedline {}:{}:{}", file!(), line!(), column!());
-        }
+        info!("update reedline {}:{}:{}", file!(), line!(), column!());
         let engine_reference = std::sync::Arc::new(engine_state.clone());
         line_editor = line_editor
             .with_highlighter(Box::new(NuHighlighter {
@@ -246,18 +242,14 @@ pub fn evaluate_repl(
         };
 
         if config.sync_history_on_enter {
-            if is_perf_true {
-                info!("sync history {}:{}:{}", file!(), line!(), column!());
-            }
+            info!("sync history {}:{}:{}", file!(), line!(), column!());
 
             if let Err(e) = line_editor.sync_history() {
                 warn!("Failed to sync history: {}", e);
             }
         }
 
-        if is_perf_true {
-            info!("setup keybindings {}:{}:{}", file!(), line!(), column!());
-        }
+        info!("setup keybindings {}:{}:{}", file!(), line!(), column!());
 
         // Changing the line editor based on the found keybindings
         line_editor = match create_keybindings(config) {
@@ -281,14 +273,12 @@ pub fn evaluate_repl(
             }
         };
 
-        if is_perf_true {
-            info!("prompt_update {}:{}:{}", file!(), line!(), column!());
-        }
+        info!("prompt_update {}:{}:{}", file!(), line!(), column!());
 
         // Right before we start our prompt and take input from the user,
         // fire the "pre_prompt" hook
         if let Some(hook) = config.hooks.pre_prompt.clone() {
-            if let Err(err) = eval_hook(engine_state, stack, vec![], &hook) {
+            if let Err(err) = eval_hook(engine_state, stack, None, vec![], &hook) {
                 report_error_new(engine_state, &err);
             }
         }
@@ -303,32 +293,31 @@ pub fn evaluate_repl(
         }
 
         let config = engine_state.get_config();
-        let prompt =
-            prompt_update::update_prompt(config, engine_state, stack, &mut nu_prompt, is_perf_true);
+        let prompt = prompt_update::update_prompt(config, engine_state, stack, &mut nu_prompt);
 
         entry_num += 1;
 
-        if is_perf_true {
-            info!(
-                "finished setup, starting repl {}:{}:{}",
-                file!(),
-                line!(),
-                column!()
-            );
-        }
+        info!(
+            "finished setup, starting repl {}:{}:{}",
+            file!(),
+            line!(),
+            column!()
+        );
 
         let input = line_editor.read_line(prompt);
         let shell_integration = config.shell_integration;
 
         match input {
             Ok(Signal::Success(s)) => {
+                let hostname = sys.host_name();
                 let history_supports_meta =
                     matches!(config.history_file_format, HistoryFileFormat::Sqlite);
-                if history_supports_meta && !s.is_empty() {
+                if history_supports_meta && !s.is_empty() && line_editor.has_last_command_context()
+                {
                     line_editor
                         .update_last_command_context(&|mut c| {
                             c.start_timestamp = Some(chrono::Utc::now());
-                            c.hostname = sys.host_name();
+                            c.hostname = hostname.clone();
 
                             c.cwd = Some(StateWorkingSet::new(engine_state).get_cwd());
                             c
@@ -336,10 +325,16 @@ pub fn evaluate_repl(
                         .into_diagnostic()?; // todo: don't stop repl if error here?
                 }
 
+                engine_state
+                    .repl_buffer_state
+                    .lock()
+                    .expect("repl buffer state mutex")
+                    .replace(line_editor.current_buffer_contents().to_string());
+
                 // Right before we start running the code the user gave us,
                 // fire the "pre_execution" hook
                 if let Some(hook) = config.hooks.pre_execution.clone() {
-                    if let Err(err) = eval_hook(engine_state, stack, vec![], &hook) {
+                    if let Err(err) = eval_hook(engine_state, stack, None, vec![], &hook) {
                         report_error_new(engine_state, &err);
                     }
                 }
@@ -352,9 +347,13 @@ pub fn evaluate_repl(
                 let tokens = lex(s.as_bytes(), 0, &[], &[], false);
                 // Check if this is a single call to a directory, if so auto-cd
                 let cwd = nu_engine::env::current_dir_str(engine_state, stack)?;
-                let path = nu_path::expand_path_with(&s, &cwd);
 
-                let orig = s.clone();
+                let mut orig = s.clone();
+                if orig.starts_with('`') {
+                    orig = trim_quotes_str(&orig).to_string()
+                }
+
+                let path = nu_path::expand_path_with(&orig, &cwd);
 
                 if looks_like_path(&orig) && path.is_dir() && tokens.0.len() == 1 {
                     // We have an auto-cd
@@ -424,7 +423,7 @@ pub fn evaluate_repl(
                             span,
                         },
                     );
-                } else {
+                } else if !s.trim().is_empty() {
                     trace!("eval source: {}", s);
 
                     eval_source(
@@ -445,7 +444,8 @@ pub fn evaluate_repl(
                     },
                 );
 
-                if history_supports_meta && !s.is_empty() {
+                if history_supports_meta && !s.is_empty() && line_editor.has_last_command_context()
+                {
                     line_editor
                         .update_last_command_context(&|mut c| {
                             c.duration = Some(cmd_duration);
@@ -461,6 +461,21 @@ pub fn evaluate_repl(
                     run_ansi_sequence(&get_command_finished_marker(stack, engine_state))?;
                     if let Some(cwd) = stack.get_env_var(engine_state, "PWD") {
                         let path = cwd.as_string()?;
+
+                        // Communicate the path as OSC 7 (often used for spawning new tabs in the same dir)
+                        run_ansi_sequence(&format!(
+                            "\x1b]7;file://{}{}{}\x1b\\",
+                            percent_encoding::utf8_percent_encode(
+                                &hostname.unwrap_or_else(|| "localhost".to_string()),
+                                percent_encoding::CONTROLS
+                            ),
+                            if path.starts_with('/') { "" } else { "/" },
+                            percent_encoding::utf8_percent_encode(
+                                &path,
+                                percent_encoding::CONTROLS
+                            )
+                        ))?;
+
                         // Try to abbreviate string for windows title
                         let maybe_abbrev_path = if let Some(p) = nu_path::home_dir() {
                             path.replace(&p.as_path().display().to_string(), "~")
@@ -476,6 +491,24 @@ pub fn evaluate_repl(
                         run_ansi_sequence(&format!("\x1b]2;{}\x07", maybe_abbrev_path))?;
                     }
                     run_ansi_sequence(RESET_APPLICATION_MODE)?;
+                }
+
+                let mut ops = engine_state
+                    .repl_operation_queue
+                    .lock()
+                    .expect("repl op queue mutex");
+                while let Some(op) = ops.pop_front() {
+                    match op {
+                        ReplOperation::Append(s) => line_editor.run_edit_commands(&[
+                            EditCommand::MoveToEnd,
+                            EditCommand::InsertString(s),
+                        ]),
+                        ReplOperation::Insert(s) => {
+                            line_editor.run_edit_commands(&[EditCommand::InsertString(s)])
+                        }
+                        ReplOperation::Replace(s) => line_editor
+                            .run_edit_commands(&[EditCommand::Clear, EditCommand::InsertString(s)]),
+                    }
                 }
             }
             Ok(Signal::CtrlC) => {
@@ -496,6 +529,10 @@ pub fn evaluate_repl(
                 let message = err.to_string();
                 if !message.contains("duration") {
                     println!("Error: {:?}", err);
+                    // TODO: Identify possible error cases where a hard failure is preferable
+                    // Ignoring and reporting could hide bigger problems
+                    // e.g. https://github.com/nushell/nushell/issues/6452
+                    // Alternatively only allow that expected failures let the REPL loop
                 }
                 if shell_integration {
                     run_ansi_sequence(&get_command_finished_marker(stack, engine_state))?;
@@ -512,7 +549,7 @@ fn get_banner(engine_state: &mut EngineState, stack: &mut Stack) -> String {
         engine_state,
         stack,
         None,
-        "(date now) - ('05/10/2019' | into datetime)",
+        "(date now) - ('2019-05-10 09:59:12-0700' | into datetime)",
     ) {
         Ok(Value::Duration { val, .. }) => format_duration(val),
         _ => "".to_string(),
@@ -529,13 +566,13 @@ Our {}GitHub{} repository is at {}https://github.com/nushell/nushell{}
 Our {}Documentation{} is located at {}http://nushell.sh{}
 {}Tweet{} us at {}@nu_shell{}
 
-{}Nushell{} has been around for:
+It's been this long since {}Nushell{}'s first commit:
 {}
 
 {}You can disable this banner using the {}config nu{}{} command
 to modify the config.nu file and setting show_banner to false.
 
-let-env config {{
+let-env config = {{
     show_banner: false
     ...
 }}{}
@@ -596,9 +633,7 @@ pub fn eval_string_with_input(
         (output, working_set.render())
     };
 
-    if let Err(err) = engine_state.merge_delta(delta) {
-        return Err(err);
-    }
+    engine_state.merge_delta(delta)?;
 
     let input_as_pipeline_data = match input {
         Some(input) => PipelineData::Value(input, None),
@@ -651,6 +686,7 @@ pub fn eval_env_change_hook(
                         eval_hook(
                             engine_state,
                             stack,
+                            None,
                             vec![("$before".into(), before), ("$after".into(), after.clone())],
                             hook_value,
                         )?;
@@ -676,15 +712,17 @@ pub fn eval_env_change_hook(
 pub fn eval_hook(
     engine_state: &mut EngineState,
     stack: &mut Stack,
+    input: Option<PipelineData>,
     arguments: Vec<(String, Value)>,
     value: &Value,
-) -> Result<(), ShellError> {
+) -> Result<PipelineData, ShellError> {
     let value_span = value.span()?;
 
     let condition_path = PathMember::String {
         val: "condition".to_string(),
         span: value_span,
     };
+    let mut output = PipelineData::new(Span::new(0, 0));
 
     let code_path = PathMember::String {
         val: "code".to_string(),
@@ -694,7 +732,7 @@ pub fn eval_hook(
     match value {
         Value::List { vals, .. } => {
             for val in vals {
-                eval_hook(engine_state, stack, arguments.clone(), val)?
+                eval_hook(engine_state, stack, None, arguments.clone(), val)?;
             }
         }
         Value::Record { .. } => {
@@ -710,6 +748,7 @@ pub fn eval_hook(
                                 engine_state,
                                 stack,
                                 block_id,
+                                None,
                                 arguments.clone(),
                                 block_span,
                             ) {
@@ -789,7 +828,9 @@ pub fn eval_hook(
                             .collect();
 
                         match eval_block(engine_state, stack, &block, input, false, false) {
-                            Ok(_) => {}
+                            Ok(pipeline_data) => {
+                                output = pipeline_data;
+                            }
                             Err(err) => {
                                 report_error_new(engine_state, &err);
                             }
@@ -804,7 +845,14 @@ pub fn eval_hook(
                         span: block_span,
                         ..
                     } => {
-                        run_hook_block(engine_state, stack, block_id, arguments, block_span)?;
+                        run_hook_block(
+                            engine_state,
+                            stack,
+                            block_id,
+                            input,
+                            arguments,
+                            block_span,
+                        )?;
                     }
                     other => {
                         return Err(ShellError::UnsupportedConfigValue(
@@ -821,7 +869,17 @@ pub fn eval_hook(
             span: block_span,
             ..
         } => {
-            run_hook_block(engine_state, stack, *block_id, arguments, *block_span)?;
+            output = PipelineData::Value(
+                run_hook_block(
+                    engine_state,
+                    stack,
+                    *block_id,
+                    input,
+                    arguments,
+                    *block_span,
+                )?,
+                None,
+            );
         }
         other => {
             return Err(ShellError::UnsupportedConfigValue(
@@ -835,19 +893,20 @@ pub fn eval_hook(
     let cwd = get_guaranteed_cwd(engine_state, stack);
     engine_state.merge_env(stack, cwd)?;
 
-    Ok(())
+    Ok(output)
 }
 
 pub fn run_hook_block(
     engine_state: &EngineState,
     stack: &mut Stack,
     block_id: BlockId,
+    optional_input: Option<PipelineData>,
     arguments: Vec<(String, Value)>,
     span: Span,
 ) -> Result<Value, ShellError> {
     let block = engine_state.get_block(block_id);
 
-    let input = PipelineData::new(span);
+    let input = optional_input.unwrap_or_else(|| PipelineData::new(span));
 
     let mut callee_stack = stack.gather_captures(&block.captures);
 

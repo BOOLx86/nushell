@@ -69,7 +69,7 @@ impl Command for Lines {
 
                 let iter = stream
                     .into_iter()
-                    .filter_map(move |(value, _)| {
+                    .filter_map(move |value| {
                         if let Value::String { val, span } = value {
                             if split_char != "\r\n" && val.contains("\r\n") {
                                 split_char = "\r\n";
@@ -129,7 +129,7 @@ impl Command for Lines {
     fn examples(&self) -> Vec<Example> {
         vec![Example {
             description: "Split multi-line string into lines",
-            example: "echo $'two(char nl)lines' | lines",
+            example: r#"echo $"two\nlines" | lines"#,
             result: Some(Value::List {
                 vals: vec![Value::test_string("two"), Value::test_string("lines")],
                 span: Span::test_data(),
@@ -250,5 +250,17 @@ impl RawStreamLinesAdapter {
             queue: Vec::<String>::new(),
             inner_complete: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_examples() {
+        use crate::test_examples;
+
+        test_examples(Lines {})
     }
 }

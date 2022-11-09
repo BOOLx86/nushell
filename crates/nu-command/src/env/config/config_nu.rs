@@ -37,7 +37,7 @@ impl Command for ConfigNu {
         &self,
         engine_state: &EngineState,
         stack: &mut Stack,
-        _call: &Call,
+        call: &Call,
         input: PipelineData,
     ) -> Result<nu_protocol::PipelineData, nu_protocol::ShellError> {
         let env_vars_str = env_to_strings(engine_state, stack)?;
@@ -58,8 +58,8 @@ impl Command for ConfigNu {
         nu_config.push("config.nu");
 
         let name = Spanned {
-            item: get_editor(engine_state, stack),
-            span: Span { start: 0, end: 0 },
+            item: get_editor(engine_state, stack)?,
+            span: call.head,
         };
 
         let args = vec![Spanned {
@@ -70,11 +70,12 @@ impl Command for ConfigNu {
         let command = ExternalCommand {
             name,
             args,
+            arg_keep_raw: vec![false],
             redirect_stdout: false,
             redirect_stderr: false,
             env_vars: env_vars_str,
         };
 
-        command.run_with_input(engine_state, stack, input)
+        command.run_with_input(engine_state, stack, input, true)
     }
 }

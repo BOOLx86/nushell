@@ -42,12 +42,12 @@ impl Command for Ls {
             .switch("all", "Show hidden files", Some('a'))
             .switch(
                 "long",
-                "List all available columns for each entry",
+                "Get all available columns for each entry (slower; columns are platform-dependent)",
                 Some('l'),
             )
             .switch(
                 "short-names",
-                "Only print the file names and not the path",
+                "Only print the file names, and not the path",
                 Some('s'),
             )
             .switch("full-paths", "display paths as absolute paths", Some('f'))
@@ -86,10 +86,7 @@ impl Command for Ls {
         let pattern_arg = {
             if let Some(path) = pattern_arg {
                 Some(Spanned {
-                    item: match strip_ansi_escapes::strip(&path.item) {
-                        Ok(item) => String::from_utf8(item).unwrap_or(path.item),
-                        Err(_) => path.item,
-                    },
+                    item: nu_utils::strip_ansi_string_unlikely(path.item),
                     span: path.span,
                 })
             } else {
@@ -201,7 +198,7 @@ impl Command for Ls {
                     } else if full_paths || absolute_path {
                         Some(path.to_string_lossy().to_string())
                     } else if let Some(prefix) = &prefix {
-                        if let Ok(remainder) = path.strip_prefix(&prefix) {
+                        if let Ok(remainder) = path.strip_prefix(prefix) {
                             if directory {
                                 // When the path is the same as the cwd, path_diff should be "."
                                 let path_diff =
@@ -218,7 +215,7 @@ impl Command for Ls {
 
                                 Some(path_diff)
                             } else {
-                                let new_prefix = if let Some(pfx) = diff_paths(&prefix, &cwd) {
+                                let new_prefix = if let Some(pfx) = diff_paths(prefix, &cwd) {
                                     pfx
                                 } else {
                                     prefix.to_path_buf()
@@ -274,45 +271,44 @@ impl Command for Ls {
     fn examples(&self) -> Vec<Example> {
         vec![
             Example {
-                description: "List all files in the current directory",
+                description: "List visible files in the current directory",
                 example: "ls",
                 result: None,
             },
             Example {
-                description: "List all files in a subdirectory",
+                description: "List visible files in a subdirectory",
                 example: "ls subdir",
                 result: None,
             },
             Example {
-                description: "List all files with full path in the parent directory",
+                description: "List visible files with full path in the parent directory",
                 example: "ls -f ..",
                 result: None,
             },
             Example {
-                description: "List all rust files",
+                description: "List Rust files",
                 example: "ls *.rs",
                 result: None,
             },
             Example {
-                description: "List all files and directories whose name do not contain 'bar'",
+                description: "List files and directories whose name do not contain 'bar'",
                 example: "ls -s | where name !~ bar",
                 result: None,
             },
             Example {
                 description: "List all dirs in your home directory",
-                example: "ls ~ | where type == dir",
+                example: "ls -a ~ | where type == dir",
                 result: None,
             },
             Example {
                 description:
                     "List all dirs in your home directory which have not been modified in 7 days",
-                example: "ls -s ~ | where type == dir && modified < ((date now) - 7day)",
+                example: "ls -as ~ | where type == dir && modified < ((date now) - 7day)",
                 result: None,
             },
             Example {
-                description: "List given paths, show directories themselves",
-                example:
-                    "['/path/to/directory' '/path/to/file'] | each { |it| ls -D $it } | flatten",
+                description: "List given paths and show directories themselves",
+                example: "['/path/to/directory' '/path/to/file'] | each { ls -D $in } | flatten",
                 result: None,
             },
         ]
@@ -491,7 +487,10 @@ pub(crate) fn dir_entry_dict(
                         span,
                     });
                 } else {
-                    vals.push(Value::nothing(span))
+                    vals.push(Value::Int {
+                        val: md.uid() as i64,
+                        span,
+                    })
                 }
 
                 cols.push("group".into());
@@ -501,7 +500,10 @@ pub(crate) fn dir_entry_dict(
                         span,
                     });
                 } else {
-                    vals.push(Value::nothing(span))
+                    vals.push(Value::Int {
+                        val: md.gid() as i64,
+                        span,
+                    })
                 }
             }
         }

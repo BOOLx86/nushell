@@ -94,7 +94,7 @@ impl Command for SubCommand {
 
     fn search_terms(&self) -> Vec<&str> {
         vec![
-            "network", "fetch", "get", "pull", "request", "http", "download", "curl", "wget",
+            "network", "get", "pull", "request", "http", "download", "curl", "wget",
         ]
     }
 
@@ -376,8 +376,8 @@ fn helper(
     let headers = args.headers;
     let raw = args.raw;
     let login = match (user, password) {
-        (Some(user), Some(password)) => Some(encode(&format!("{}:{}", user, password))),
-        (Some(user), _) => Some(encode(&format!("{}:", user))),
+        (Some(user), Some(password)) => Some(encode(format!("{}:{}", user, password))),
+        (Some(user), _) => Some(encode(format!("{}:", user))),
         _ => None,
     };
 
@@ -427,7 +427,7 @@ fn helper(
                     // primitive values ([key1 val1 key2 val2])
                     for row in table.chunks(2) {
                         if row.len() == 2 {
-                            custom_headers.insert(row[0].as_string()?, (&row[1]).clone());
+                            custom_headers.insert(row[0].as_string()?, row[1].clone());
                         }
                     }
                 }

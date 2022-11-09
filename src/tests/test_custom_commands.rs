@@ -121,13 +121,16 @@ fn allow_missing_optional_params() -> TestResult {
 
 #[test]
 fn help_present_in_def() -> TestResult {
-    run_test_contains("def foo [] {}; help foo;", "Display this help message")
+    run_test_contains(
+        "def foo [] {}; help foo;",
+        "Display the help message for this command",
+    )
 }
 
 #[test]
 fn help_not_present_in_extern() -> TestResult {
     run_test(
-        "module test {export extern \"git fetch\" []}; use test; help git fetch",
+        "module test {export extern \"git fetch\" []}; use test; help git fetch | ansi strip",
         "Usage:\n  > git fetch",
     )
 }

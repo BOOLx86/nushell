@@ -154,7 +154,7 @@ fn parses_tsv() {
         cwd: "tests/fixtures/formats", pipeline(
         r#"
             open caco3_plastics.tsv
-            | first 1
+            | first
             | get origin
         "#
     ));
@@ -206,6 +206,22 @@ fn parses_utf16_ini() {
     );
 
     assert_eq!(actual.out, "-236")
+}
+
+#[cfg(feature = "dataframe")]
+#[test]
+fn parses_arrow_ipc() {
+    let actual = nu!(
+        cwd: "tests/fixtures/formats", pipeline(
+        r#"
+            open-df caco3_plastics.arrow
+            | into nu
+            | first
+            | get origin
+        "#
+    ));
+
+    assert_eq!(actual.out, "SPAIN")
 }
 
 #[test]

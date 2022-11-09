@@ -2,7 +2,7 @@ use nu_engine::CallExt;
 use nu_protocol::ast::Call;
 use nu_protocol::engine::{Command, EngineState, Stack};
 use nu_protocol::{
-    Category, Example, ListStream, PipelineData, ShellError, Signature, SyntaxShape, Value,
+    Category, Example, ListStream, PipelineData, ShellError, Signature, Span, SyntaxShape, Value,
 };
 
 #[derive(Clone)]
@@ -14,7 +14,7 @@ impl Command for Echo {
     }
 
     fn usage(&self) -> &str {
-        "Echo the arguments back to the user."
+        "Returns its arguments, ignoring the piped-in value."
     }
 
     fn signature(&self) -> Signature {
@@ -24,7 +24,9 @@ impl Command for Echo {
     }
 
     fn extra_usage(&self) -> &str {
-        "Unlike `print`, this command returns an actual value that will be passed to the next command of the pipeline."
+        r#"When given no arguments, it returns an empty string. When given one argument,
+it returns it. Otherwise, it returns a list of the arguments. There is usually
+little reason to use this over just writing the values as-is."#
     }
 
     fn run(
@@ -34,44 +36,44 @@ impl Command for Echo {
         call: &Call,
         _input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
-        call.rest(engine_state, stack, 0)
-            .map(|to_be_echoed: Vec<Value>| {
-                let n = to_be_echoed.len();
-                match n.cmp(&1usize) {
-                    //  More than one value is converted in a stream of values
-                    std::cmp::Ordering::Greater => PipelineData::ListStream(
-                        ListStream::from_stream(
-                            to_be_echoed.into_iter(),
-                            engine_state.ctrlc.clone(),
-                        ),
-                        None,
-                    ),
+        call.rest(engine_state, stack, 0).map(|to_be_echoed| {
+            let n = to_be_echoed.len();
+            match n.cmp(&1usize) {
+                //  More than one value is converted in a stream of values
+                std::cmp::Ordering::Greater => PipelineData::ListStream(
+                    ListStream::from_stream(to_be_echoed.into_iter(), engine_state.ctrlc.clone()),
+                    None,
+                ),
 
-                    //  But a single value can be forwarded as it is
-                    std::cmp::Ordering::Equal => PipelineData::Value(to_be_echoed[0].clone(), None),
+                //  But a single value can be forwarded as it is
+                std::cmp::Ordering::Equal => PipelineData::Value(to_be_echoed[0].clone(), None),
 
-                    //  When there are no elements, we echo the empty string
-                    std::cmp::Ordering::Less => PipelineData::Value(
-                        Value::String {
-                            val: "".to_string(),
-                            span: call.head,
-                        },
-                        None,
-                    ),
-                }
-            })
+                //  When there are no elements, we echo the empty string
+                std::cmp::Ordering::Less => PipelineData::Value(
+                    Value::String {
+                        val: "".to_string(),
+                        span: call.head,
+                    },
+                    None,
+                ),
+            }
+        })
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![
             Example {
-                description: "Put a hello message in the pipeline",
-                example: "echo 'hello'",
-                result: Some(Value::test_string("hello")),
+                description: "Put a list of numbers in the pipeline. This is the same as [1 2 3].",
+                example: "echo 1 2 3",
+                result: Some(Value::List {
+                    vals: vec![Value::test_int(1), Value::test_int(2), Value::test_int(3)],
+                    span: Span::test_data(),
+                }),
             },
             Example {
-                description: "Print the value of the special '$nu' variable",
-                example: "echo $nu",
+                description:
+                    "Returns the piped-in value, by using the special $in variable to obtain it.",
+                example: "echo $in",
                 result: None,
             },
         ]

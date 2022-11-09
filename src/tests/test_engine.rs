@@ -53,7 +53,7 @@ fn in_and_if_else() -> TestResult {
 
 #[test]
 fn help_works_with_missing_requirements() -> TestResult {
-    run_test(r#"each --help | lines | length"#, "32")
+    run_test(r#"each --help | lines | length"#, "37")
 }
 
 #[test]
@@ -182,17 +182,14 @@ fn def_env() -> TestResult {
 
 #[test]
 fn not_def_env() -> TestResult {
-    fail_test(
-        r#"def bob [] { let-env BAR = "BAZ" }; bob; $env.BAR"#,
-        "did you mean",
-    )
+    fail_test(r#"def bob [] { let-env BAR = "BAZ" }; bob; $env.BAR"#, "")
 }
 
 #[test]
 fn def_env_hiding_something() -> TestResult {
     fail_test(
         r#"let-env FOO = "foo"; def-env bob [] { hide-env FOO }; bob; $env.FOO"#,
-        "did you mean",
+        "",
     )
 }
 
@@ -200,7 +197,7 @@ fn def_env_hiding_something() -> TestResult {
 fn def_env_then_hide() -> TestResult {
     fail_test(
         r#"def-env bob [] { let-env BOB = "bob" }; def-env un-bob [] { hide-env BOB }; bob; un-bob; $env.BOB"#,
-        "did you mean",
+        "",
     )
 }
 
@@ -335,7 +332,7 @@ fn in_means_input() -> TestResult {
 #[test]
 fn in_iteration() -> TestResult {
     run_test(
-        r#"[3, 4, 5] | each { echo $"hi ($in)" } | str collect"#,
+        r#"[3, 4, 5] | each { echo $"hi ($in)" } | str join"#,
         "hi 3hi 4hi 5",
     )
 }

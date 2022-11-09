@@ -23,7 +23,7 @@ fn cell_path_var2() -> TestResult {
 #[test]
 fn flatten_simple_list() -> TestResult {
     run_test(
-        "[[N, u, s, h, e, l, l]] | flatten | str collect (char nl)",
+        "[[N, u, s, h, e, l, l]] | flatten | str join (char nl)",
         "N\nu\ns\nh\ne\nl\nl",
     )
 }
@@ -251,7 +251,7 @@ fn length_for_rows() -> TestResult {
 #[test]
 fn length_defaulted_columns() -> TestResult {
     run_test(
-        r#"echo [[name, age]; [test, 10]] | default 11 age | get 0 | columns | length"#,
+        r#"[[name, age]; [test, 10]] | default 11 age | get 0 | columns | length"#,
         "2",
     )
 }

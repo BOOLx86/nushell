@@ -25,7 +25,7 @@ impl Command for First {
     }
 
     fn usage(&self) -> &str {
-        "Show only the first number of rows."
+        "Return only the first several rows of the input. Counterpart of 'last'. Opposite of 'skip'."
     }
 
     fn run(
@@ -146,7 +146,7 @@ fn first_helper(
                 }
             }
             _ => {
-                if rows_desired == 1 {
+                if rows_desired == 1 && rows.is_none() {
                     match input_peek.next() {
                         Some(val) => Ok(val.into_pipeline_data()),
                         None => Err(ShellError::AccessBeyondEndOfStream(head)),

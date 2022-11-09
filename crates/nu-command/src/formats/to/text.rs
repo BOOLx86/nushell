@@ -66,10 +66,6 @@ impl Command for ToText {
             },
         ]
     }
-
-    fn search_terms(&self) -> Vec<&str> {
-        vec!["text", "convert"]
-    }
 }
 
 fn local_into_string(value: Value, separator: &str, config: &Config) -> String {

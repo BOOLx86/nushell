@@ -20,29 +20,19 @@ jobs:
       NUSHELL_CARGO_TARGET: ci
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
 
-      - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        # makes ci use rust-toolchain.toml
-        # with:
-        #   profile: minimal
-        #   toolchain: ${{ matrix.rust }}
-        #   override: true
-        #   components: rustfmt, clippy
-
-      - uses: Swatinem/rust-cache@v1
-        with:
-          key: "v2" # increment this to bust the cache if needed
+      - name: Setup Rust toolchain and cache
+        uses: actions-rust-lang/setup-rust-toolchain@v1.3.4
 
       - name: Rustfmt
-        uses: actions-rs/cargo@v1
+        uses: actions-rs/cargo@v1.0.1
         with:
           command: fmt
           args: --all -- --check
 
       - name: Clippy
-        uses: actions-rs/cargo@v1
+        uses: actions-rs/cargo@v1.0.1
         with:
           command: clippy
           args: --features=extra --workspace --exclude nu_plugin_* -- -D warnings -D clippy::unwrap_used -A clippy::needless_collect
@@ -72,24 +62,13 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
 
-      - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        # makes ci use rust-toolchain.toml
-        # with:
-        #   profile: minimal
-        #   toolchain: ${{ matrix.rust }}
-        #   override: true
-
-      # Temporarily disabled; the cache was getting huge (2.6GB compressed) on Windows and causing issues.
-      # TODO: investigate why the cache was so big
-      # - uses: Swatinem/rust-cache@v1
-      #   with:
-      #     key: ${{ matrix.style }}v3 # increment this to bust the cache if needed
+      - name: Setup Rust toolchain and cache
+        uses: actions-rust-lang/setup-rust-toolchain@v1.3.4
 
       - name: Tests
-        uses: actions-rs/cargo@v1
+        uses: actions-rs/cargo@v1.0.1
         with:
           command: test
           args: --workspace --profile ci --exclude nu_plugin_* ${{ matrix.flags }}
@@ -110,28 +89,19 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
 
-      - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        # makes ci use rust-toolchain.toml
-        # with:
-        #   profile: minimal
-        #   toolchain: ${{ matrix.rust }}
-        #   override: true
-
-      - uses: Swatinem/rust-cache@v1
-        with:
-          key: "2" # increment this to bust the cache if needed
+      - name: Setup Rust toolchain and cache
+        uses: actions-rust-lang/setup-rust-toolchain@v1.3.4
 
       - name: Install Nushell
-        uses: actions-rs/cargo@v1
+        uses: actions-rs/cargo@v1.0.1
         with:
           command: install
           args: --path=. --profile ci --no-default-features
 
       - name: Setup Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
           python-version: "3.10"
 
@@ -161,24 +131,19 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
 
-      - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        # makes ci use rust-toolchain.toml
-        # with:
-        #   profile: minimal
-        #   toolchain: ${{ matrix.rust }}
-        #   override: true
+      - name: Setup Rust toolchain and cache
+        uses: actions-rust-lang/setup-rust-toolchain@v1.3.4
 
       - name: Clippy
-        uses: actions-rs/cargo@v1
+        uses: actions-rs/cargo@v1.0.1
         with:
           command: clippy
           args: --package nu_plugin_* ${{ matrix.flags }} -- -D warnings -D clippy::unwrap_used -A clippy::needless_collect
 
       - name: Tests
-        uses: actions-rs/cargo@v1
+        uses: actions-rs/cargo@v1.0.1
         with:
           command: test
           args: --profile ci --package nu_plugin_*

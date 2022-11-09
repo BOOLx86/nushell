@@ -35,7 +35,7 @@ impl Command for SubCommand {
     }
 
     fn search_terms(&self) -> Vec<&str> {
-        vec!["date", "format", "strftime"]
+        vec!["fmt", "strftime"]
     }
 
     fn run(
@@ -87,7 +87,10 @@ impl Command for SubCommand {
             Example {
                 description: "Format a given date using a given format string.",
                 example: r#""2021-10-22 20:00:12 +01:00" | date format "%Y-%m-%d""#,
-                result: None,
+                result: Some(Value::String {
+                    val: "2021-10-22".to_string(),
+                    span: Span::test_data(),
+                }),
             },
         ]
     }

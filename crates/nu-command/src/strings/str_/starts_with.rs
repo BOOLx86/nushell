@@ -1,3 +1,4 @@
+use crate::input_handler::{operate, CmdArgument};
 use nu_engine::CallExt;
 use nu_protocol::ast::Call;
 use nu_protocol::ast::CellPath;
@@ -5,11 +6,16 @@ use nu_protocol::engine::{Command, EngineState, Stack};
 use nu_protocol::Category;
 use nu_protocol::Spanned;
 use nu_protocol::{Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Value};
-use std::sync::Arc;
 
 struct Arguments {
-    pattern: String,
-    column_paths: Vec<CellPath>,
+    substring: String,
+    cell_paths: Option<Vec<CellPath>>,
+}
+
+impl CmdArgument for Arguments {
+    fn take_cell_paths(&mut self) -> Option<Vec<CellPath>> {
+        self.cell_paths.take()
+    }
 }
 
 #[derive(Clone)]
@@ -23,7 +29,7 @@ impl Command for SubCommand {
 
     fn signature(&self) -> Signature {
         Signature::build("str starts-with")
-            .required("pattern", SyntaxShape::String, "the pattern to match")
+            .required("string", SyntaxShape::String, "the string to match")
             .rest(
                 "rest",
                 SyntaxShape::CellPath,
@@ -33,11 +39,11 @@ impl Command for SubCommand {
     }
 
     fn usage(&self) -> &str {
-        "Check if string starts with a pattern"
+        "Check if an input starts with a string"
     }
 
     fn search_terms(&self) -> Vec<&str> {
-        vec!["pattern", "match", "find", "search"]
+        vec!["prefix", "match", "find", "search"]
     }
 
     fn run(
@@ -47,13 +53,20 @@ impl Command for SubCommand {
         call: &Call,
         input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
-        operate(engine_state, stack, call, input)
+        let substring: Spanned<String> = call.req(engine_state, stack, 0)?;
+        let cell_paths: Vec<CellPath> = call.rest(engine_state, stack, 1)?;
+        let cell_paths = (!cell_paths.is_empty()).then_some(cell_paths);
+        let args = Arguments {
+            substring: substring.item,
+            cell_paths,
+        };
+        operate(action, args, input, call.head, engine_state.ctrlc.clone())
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![
             Example {
-                description: "Checks if string starts with 'my' pattern",
+                description: "Checks if input string starts with 'my'",
                 example: "'my_library.rb' | str starts-with 'my'",
                 result: Some(Value::Bool {
                     val: true,
@@ -61,7 +74,7 @@ impl Command for SubCommand {
                 }),
             },
             Example {
-                description: "Checks if string starts with 'my' pattern",
+                description: "Checks if input string starts with 'my'",
                 example: "'Cargo.toml' | str starts-with 'Car'",
                 result: Some(Value::Bool {
                     val: true,
@@ -69,7 +82,7 @@ impl Command for SubCommand {
                 }),
             },
             Example {
-                description: "Checks if string starts with 'my' pattern",
+                description: "Checks if input string starts with 'my'",
                 example: "'Cargo.toml' | str starts-with '.toml'",
                 result: Some(Value::Bool {
                     val: false,
@@ -80,46 +93,10 @@ impl Command for SubCommand {
     }
 }
 
-fn operate(
-    engine_state: &EngineState,
-    stack: &mut Stack,
-    call: &Call,
-    input: PipelineData,
-) -> Result<PipelineData, ShellError> {
-    let pattern: Spanned<String> = call.req(engine_state, stack, 0)?;
-
-    let options = Arc::new(Arguments {
-        pattern: pattern.item,
-        column_paths: call.rest(engine_state, stack, 1)?,
-    });
-    let head = call.head;
-    input.map(
-        move |v| {
-            if options.column_paths.is_empty() {
-                action(&v, &options, head)
-            } else {
-                let mut ret = v;
-                for path in &options.column_paths {
-                    let opt = options.clone();
-                    let r = ret.update_cell_path(
-                        &path.members,
-                        Box::new(move |old| action(old, &opt, head)),
-                    );
-                    if let Err(error) = r {
-                        return Value::Error { error };
-                    }
-                }
-                ret
-            }
-        },
-        engine_state.ctrlc.clone(),
-    )
-}
-
-fn action(input: &Value, Arguments { pattern, .. }: &Arguments, head: Span) -> Value {
+fn action(input: &Value, Arguments { substring, .. }: &Arguments, head: Span) -> Value {
     match input {
         Value::String { val: s, .. } => {
-            let starts_with = s.starts_with(pattern);
+            let starts_with = s.starts_with(substring);
             Value::Bool {
                 val: starts_with,
                 span: head,

@@ -1,7 +1,6 @@
 use crate::{
     lex, lite_parse,
     lite_parse::LiteCommand,
-    parse_keywords::{parse_extern, parse_for, parse_source},
     type_check::{math_result_type, type_compatible},
     LiteBlock, ParseError, Token, TokenContents,
 };
@@ -18,8 +17,8 @@ use nu_protocol::{
 };
 
 use crate::parse_keywords::{
-    parse_alias, parse_def, parse_def_predecl, parse_hide, parse_let, parse_module, parse_overlay,
-    parse_use,
+    parse_alias, parse_def, parse_def_predecl, parse_export_in_block, parse_extern, parse_for,
+    parse_hide, parse_let, parse_module, parse_overlay, parse_source, parse_use,
 };
 
 use itertools::Itertools;
@@ -231,30 +230,42 @@ pub fn check_name<'a>(
     working_set: &mut StateWorkingSet,
     spans: &'a [Span],
 ) -> Option<(&'a Span, ParseError)> {
+    let command_len = if !spans.is_empty() {
+        if working_set.get_span_contents(spans[0]) == b"export" {
+            2
+        } else {
+            1
+        }
+    } else {
+        return None;
+    };
+
     if spans.len() == 1 {
         None
-    } else if spans.len() < 4 {
-        if working_set.get_span_contents(spans[1]) == b"=" {
-            let name = String::from_utf8_lossy(working_set.get_span_contents(spans[0]));
+    } else if spans.len() < command_len + 3 {
+        if working_set.get_span_contents(spans[command_len]) == b"=" {
+            let name =
+                String::from_utf8_lossy(working_set.get_span_contents(span(&spans[..command_len])));
             Some((
-                &spans[1],
+                &spans[command_len],
                 ParseError::AssignmentMismatch(
                     format!("{} missing name", name),
                     "missing name".into(),
-                    spans[1],
+                    spans[command_len],
                 ),
             ))
         } else {
             None
         }
-    } else if working_set.get_span_contents(spans[2]) != b"=" {
-        let name = String::from_utf8_lossy(working_set.get_span_contents(spans[0]));
+    } else if working_set.get_span_contents(spans[command_len + 1]) != b"=" {
+        let name =
+            String::from_utf8_lossy(working_set.get_span_contents(span(&spans[..command_len])));
         Some((
-            &spans[2],
+            &spans[command_len + 1],
             ParseError::AssignmentMismatch(
                 format!("{} missing sign", name),
                 "missing equal sign".into(),
-                spans[2],
+                spans[command_len + 1],
             ),
         ))
     } else {
@@ -320,7 +331,13 @@ pub fn parse_external_call(
             args.push(arg);
         } else {
             // Eval stage trims the quotes, so we don't have to do the same thing when parsing.
-            let contents = String::from_utf8_lossy(contents).to_string();
+            let contents = if contents.starts_with(b"\"") {
+                let (contents, err) = unescape_string(contents, *span);
+                error = error.or(err);
+                String::from_utf8_lossy(&contents).to_string()
+            } else {
+                String::from_utf8_lossy(contents).to_string()
+            };
 
             args.push(Expression {
                 expr: Expr::String(contents),
@@ -1587,7 +1604,6 @@ pub fn parse_string_interpolation(
 
     let mut b = start;
 
-    #[allow(clippy::needless_range_loop)]
     while b != end {
         if contents[b - start] == b'('
             && (if double_quote && (b - start) > 0 {
@@ -2158,23 +2174,50 @@ pub fn parse_duration(
     }
 }
 
-pub fn parse_duration_bytes(bytes: &[u8], span: Span) -> Option<Expression> {
-    fn parse_decimal_str_to_number(decimal: &str) -> Option<i64> {
-        let string_to_parse = format!("0.{}", decimal);
-        if let Ok(x) = string_to_parse.parse::<f64>() {
-            return Some((1_f64 / x) as i64);
+// Borrowed from libm at https://github.com/rust-lang/libm/blob/master/src/math/modf.rs
+pub fn modf(x: f64) -> (f64, f64) {
+    let rv2: f64;
+    let mut u = x.to_bits();
+    let e = ((u >> 52 & 0x7ff) as i32) - 0x3ff;
+
+    /* no fractional part */
+    if e >= 52 {
+        rv2 = x;
+        if e == 0x400 && (u << 12) != 0 {
+            /* nan */
+            return (x, rv2);
         }
-        None
+        u &= 1 << 63;
+        return (f64::from_bits(u), rv2);
     }
 
-    if bytes.is_empty() || (!bytes[0].is_ascii_digit() && bytes[0] != b'-') {
+    /* no integral part*/
+    if e < 0 {
+        u &= 1 << 63;
+        rv2 = f64::from_bits(u);
+        return (x, rv2);
+    }
+
+    let mask = ((!0) >> 12) >> e;
+    if (u & mask) == 0 {
+        rv2 = x;
+        u &= 1 << 63;
+        return (f64::from_bits(u), rv2);
+    }
+    u &= !mask;
+    rv2 = f64::from_bits(u);
+    (x - rv2, rv2)
+}
+
+pub fn parse_duration_bytes(num_with_unit_bytes: &[u8], span: Span) -> Option<Expression> {
+    if num_with_unit_bytes.is_empty()
+        || (!num_with_unit_bytes[0].is_ascii_digit() && num_with_unit_bytes[0] != b'-')
+    {
         return None;
     }
 
-    let token = String::from_utf8_lossy(bytes).to_string();
-
-    let upper = token.to_uppercase();
-
+    let num_with_unit = String::from_utf8_lossy(num_with_unit_bytes).to_string();
+    let uppercase_num_with_unit = num_with_unit.to_uppercase();
     let unit_groups = [
         (Unit::Nanosecond, "NS", None),
         (Unit::Microsecond, "US", Some((Unit::Nanosecond, 1000))),
@@ -2184,38 +2227,34 @@ pub fn parse_duration_bytes(bytes: &[u8], span: Span) -> Option<Expression> {
         (Unit::Hour, "HR", Some((Unit::Minute, 60))),
         (Unit::Day, "DAY", Some((Unit::Minute, 1440))),
         (Unit::Week, "WK", Some((Unit::Day, 7))),
-        (Unit::Month, "MONTH", Some((Unit::Day, 30))), //30 day month
-        (Unit::Year, "YR", Some((Unit::Day, 365))),    //365 day year
-        (Unit::Decade, "DEC", Some((Unit::Year, 10))), //365 day years
     ];
-    if let Some(unit) = unit_groups.iter().find(|&x| upper.ends_with(x.1)) {
-        let mut lhs = token;
+
+    if let Some(unit) = unit_groups
+        .iter()
+        .find(|&x| uppercase_num_with_unit.ends_with(x.1))
+    {
+        let mut lhs = num_with_unit;
         for _ in 0..unit.1.len() {
             lhs.pop();
         }
 
-        let input: Vec<&str> = lhs.split('.').collect();
-        let (value, unit_to_use) = match &input[..] {
-            [number_str] => (number_str.parse::<i64>().ok(), unit.0),
-            [number_str, decimal_part_str] => match unit.2 {
-                Some(unit_to_convert_to) => match (
-                    number_str.parse::<i64>(),
-                    parse_decimal_str_to_number(decimal_part_str),
-                ) {
-                    (Ok(number), Some(decimal_part)) => (
-                        Some(
-                            (number * unit_to_convert_to.1) + (unit_to_convert_to.1 / decimal_part),
-                        ),
-                        unit_to_convert_to.0,
-                    ),
-                    _ => (None, unit.0),
-                },
-                None => (None, unit.0),
-            },
-            _ => (None, unit.0),
+        let (decimal_part, number_part) = modf(match lhs.parse::<f64>() {
+            Ok(x) => x,
+            Err(_) => return None,
+        });
+
+        let (num, unit_to_use) = match unit.2 {
+            Some(unit_to_convert_to) => (
+                Some(
+                    ((number_part * unit_to_convert_to.1 as f64)
+                        + (decimal_part * unit_to_convert_to.1 as f64)) as i64,
+                ),
+                unit_to_convert_to.0,
+            ),
+            None => (Some(number_part as i64), unit.0),
         };
 
-        if let Some(x) = value {
+        if let Some(x) = num {
             trace!("-- found {} {:?}", x, unit_to_use);
 
             let lhs_span = Span::new(span.start, span.start + lhs.len());
@@ -2248,33 +2287,32 @@ pub fn parse_filesize(
     working_set: &StateWorkingSet,
     span: Span,
 ) -> (Expression, Option<ParseError>) {
-    trace!("parsing: duration");
-
-    fn parse_decimal_str_to_number(decimal: &str) -> Option<i64> {
-        let string_to_parse = format!("0.{}", decimal);
-        if let Ok(x) = string_to_parse.parse::<f64>() {
-            return Some((1_f64 / x) as i64);
-        }
-        None
-    }
+    trace!("parsing: filesize");
 
     let bytes = working_set.get_span_contents(span);
 
-    if bytes.is_empty() || (!bytes[0].is_ascii_digit() && bytes[0] != b'-') {
-        return (
+    match parse_filesize_bytes(bytes, span) {
+        Some(expression) => (expression, None),
+        None => (
             garbage(span),
             Some(ParseError::Mismatch(
                 "filesize".into(),
                 "non-filesize unit".into(),
                 span,
             )),
-        );
+        ),
+    }
+}
+
+pub fn parse_filesize_bytes(num_with_unit_bytes: &[u8], span: Span) -> Option<Expression> {
+    if num_with_unit_bytes.is_empty()
+        || (!num_with_unit_bytes[0].is_ascii_digit() && num_with_unit_bytes[0] != b'-')
+    {
+        return None;
     }
 
-    let token = String::from_utf8_lossy(bytes).to_string();
-
-    let upper = token.to_uppercase();
-
+    let num_with_unit = String::from_utf8_lossy(num_with_unit_bytes).to_string();
+    let uppercase_num_with_unit = num_with_unit.to_uppercase();
     let unit_groups = [
         (Unit::Kilobyte, "KB", Some((Unit::Byte, 1000))),
         (Unit::Megabyte, "MB", Some((Unit::Kilobyte, 1000))),
@@ -2292,69 +2330,58 @@ pub fn parse_filesize(
         (Unit::Zebibyte, "ZIB", Some((Unit::Exbibyte, 1024))),
         (Unit::Byte, "B", None),
     ];
-    if let Some(unit) = unit_groups.iter().find(|&x| upper.ends_with(x.1)) {
-        let mut lhs = token;
+
+    if let Some(unit) = unit_groups
+        .iter()
+        .find(|&x| uppercase_num_with_unit.ends_with(x.1))
+    {
+        let mut lhs = num_with_unit;
         for _ in 0..unit.1.len() {
             lhs.pop();
         }
 
-        let input: Vec<&str> = lhs.split('.').collect();
-        let (value, unit_to_use) = match &input[..] {
-            [number_str] => (number_str.parse::<i64>().ok(), unit.0),
-            [number_str, decimal_part_str] => match unit.2 {
-                Some(unit_to_convert_to) => match (
-                    number_str.parse::<i64>(),
-                    parse_decimal_str_to_number(decimal_part_str),
-                ) {
-                    (Ok(number), Some(decimal_part)) => (
-                        Some(
-                            (number * unit_to_convert_to.1) + (unit_to_convert_to.1 / decimal_part),
-                        ),
-                        unit_to_convert_to.0,
-                    ),
-                    _ => (None, unit.0),
-                },
-                None => (None, unit.0),
-            },
-            _ => (None, unit.0),
+        let (decimal_part, number_part) = modf(match lhs.parse::<f64>() {
+            Ok(x) => x,
+            Err(_) => return None,
+        });
+
+        let (num, unit_to_use) = match unit.2 {
+            Some(unit_to_convert_to) => (
+                Some(
+                    ((number_part * unit_to_convert_to.1 as f64)
+                        + (decimal_part * unit_to_convert_to.1 as f64)) as i64,
+                ),
+                unit_to_convert_to.0,
+            ),
+            None => (Some(number_part as i64), unit.0),
         };
 
-        if let Some(x) = value {
+        if let Some(x) = num {
             trace!("-- found {} {:?}", x, unit_to_use);
 
             let lhs_span = Span::new(span.start, span.start + lhs.len());
             let unit_span = Span::new(span.start + lhs.len(), span.end);
-            return (
-                Expression {
-                    expr: Expr::ValueWithUnit(
-                        Box::new(Expression {
-                            expr: Expr::Int(x),
-                            span: lhs_span,
-                            ty: Type::Number,
-                            custom_completion: None,
-                        }),
-                        Spanned {
-                            item: unit_to_use,
-                            span: unit_span,
-                        },
-                    ),
-                    span,
-                    ty: Type::Filesize,
-                    custom_completion: None,
-                },
-                None,
-            );
+            return Some(Expression {
+                expr: Expr::ValueWithUnit(
+                    Box::new(Expression {
+                        expr: Expr::Int(x),
+                        span: lhs_span,
+                        ty: Type::Number,
+                        custom_completion: None,
+                    }),
+                    Spanned {
+                        item: unit_to_use,
+                        span: unit_span,
+                    },
+                ),
+                span,
+                ty: Type::Filesize,
+                custom_completion: None,
+            });
         }
     }
 
-    (
-        garbage(span),
-        Some(ParseError::Mismatch(
-            "filesize".into(),
-            "non-filesize unit".into(),
-            span,
-        )),
-    )
+    None
 }
 
 pub fn parse_glob_pattern(
@@ -3065,12 +3092,17 @@ pub fn parse_signature(
     let mut start = span.start;
     let mut end = span.end;
 
+    let mut has_paren = false;
+
     if bytes.starts_with(b"[") {
+        start += 1;
+    } else if bytes.starts_with(b"(") {
+        has_paren = true;
         start += 1;
     } else {
         error = error.or_else(|| {
             Some(ParseError::Expected(
-                "[".into(),
+                "[ or (".into(),
                 Span {
                     start,
                     end: start + 1,
@@ -3079,10 +3111,15 @@ pub fn parse_signature(
         });
     }
 
-    if bytes.ends_with(b"]") {
+    if (has_paren && bytes.ends_with(b")")) || (!has_paren && bytes.ends_with(b"]")) {
         end -= 1;
     } else {
-        error = error.or_else(|| Some(ParseError::Unclosed("]".into(), Span { start: end, end })));
+        error = error.or_else(|| {
+            Some(ParseError::Unclosed(
+                "] or )".into(),
+                Span { start: end, end },
+            ))
+        });
     }
 
     let (sig, err) =
@@ -4055,6 +4092,8 @@ pub fn parse_value(
         b'(' => {
             if let (expr, None) = parse_range(working_set, span, expand_aliases_denylist) {
                 return (expr, None);
+            } else if matches!(shape, SyntaxShape::Signature) {
+                return parse_signature(working_set, span, expand_aliases_denylist);
             } else {
                 return parse_full_cell_path(working_set, None, span, expand_aliases_denylist);
             }
@@ -4233,6 +4272,7 @@ pub fn parse_operator(
         b"=~" => Operator::RegexMatch,
         b"!~" => Operator::NotRegexMatch,
         b"+" => Operator::Plus,
+        b"++" => Operator::Append,
         b"-" => Operator::Minus,
         b"*" => Operator::Multiply,
         b"/" => Operator::Divide,
@@ -4792,65 +4832,10 @@ pub fn parse_builtin_commands(
             (pipeline, err)
         }
         b"overlay" => parse_overlay(working_set, &lite_command.parts, expand_aliases_denylist),
-        b"source" => parse_source(working_set, &lite_command.parts, expand_aliases_denylist),
-        b"export" => {
-            let full_decl = if lite_command.parts.len() > 1 {
-                let sub = working_set.get_span_contents(lite_command.parts[1]);
-                match sub {
-                    b"alias" | b"def" | b"def-env" | b"env" | b"extern" | b"use" => {
-                        [b"export ", sub].concat()
-                    }
-                    _ => b"export".to_vec(),
-                }
-            } else {
-                b"export".to_vec()
-            };
-            if let Some(decl_id) = working_set.find_decl(&full_decl, &Type::Any) {
-                let parsed_call = parse_internal_call(
-                    working_set,
-                    if full_decl == b"export" {
-                        lite_command.parts[0]
-                    } else {
-                        span(&lite_command.parts[0..2])
-                    },
-                    if full_decl == b"export" {
-                        &lite_command.parts[1..]
-                    } else {
-                        &lite_command.parts[2..]
-                    },
-                    decl_id,
-                    expand_aliases_denylist,
-                );
-
-                if parsed_call.call.has_flag("help") {
-                    (
-                        Pipeline::from_vec(vec![Expression {
-                            expr: Expr::Call(parsed_call.call),
-                            span: span(&lite_command.parts),
-                            ty: parsed_call.output,
-                            custom_completion: None,
-                        }]),
-                        None,
-                    )
-                } else {
-                    (
-                        garbage_pipeline(&lite_command.parts),
-                        Some(ParseError::UnexpectedKeyword(
-                            "export".into(),
-                            lite_command.parts[0],
-                        )),
-                    )
-                }
-            } else {
-                (
-                    garbage_pipeline(&lite_command.parts),
-                    Some(ParseError::UnexpectedKeyword(
-                        "export".into(),
-                        lite_command.parts[0],
-                    )),
-                )
-            }
+        b"source" | b"source-env" => {
+            parse_source(working_set, &lite_command.parts, expand_aliases_denylist)
         }
+        b"export" => parse_export_in_block(working_set, lite_command, expand_aliases_denylist),
         b"hide" => parse_hide(working_set, &lite_command.parts, expand_aliases_denylist),
         #[cfg(feature = "plugin")]
         b"register" => parse_register(working_set, &lite_command.parts, expand_aliases_denylist),
@@ -5229,6 +5214,7 @@ pub fn discover_captures_in_expr(
             output.extend(&result);
         }
         Expr::ImportPattern(_) => {}
+        Expr::Overlay(_) => {}
         Expr::Garbage => {}
         Expr::Nothing => {}
         Expr::GlobPattern(_) => {}
@@ -5380,6 +5366,15 @@ fn wrap_expr_with_collect(working_set: &mut StateWorkingSet, expr: &Expression) 
             ty: Type::Any,
             custom_completion: None,
         }));
+
+        output.push(Argument::Named((
+            Spanned {
+                item: "keep-env".to_string(),
+                span: Span::new(0, 0),
+            },
+            None,
+            None,
+        )));
 
         // The containing, synthetic call to `collect`.
         // We don't want to have a real span as it will confuse flattening

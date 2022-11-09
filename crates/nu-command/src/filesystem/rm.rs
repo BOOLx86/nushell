@@ -40,7 +40,7 @@ impl Command for Rm {
     }
 
     fn search_terms(&self) -> Vec<&str> {
-        vec!["rm", "remove"]
+        vec!["delete", "remove"]
     }
 
     fn signature(&self) -> Signature {
@@ -143,10 +143,7 @@ fn rm(
 
     for (idx, path) in targets.clone().into_iter().enumerate() {
         let corrected_path = Spanned {
-            item: match strip_ansi_escapes::strip(&path.item) {
-                Ok(item) => String::from_utf8(item).unwrap_or(path.item),
-                Err(_) => path.item,
-            },
+            item: nu_utils::strip_ansi_string_unlikely(path.item),
             span: path.span,
         };
         let _ = std::mem::replace(&mut targets[idx], corrected_path);
@@ -202,6 +199,7 @@ fn rm(
 
     let path = current_dir(engine_state, stack)?;
 
+    let (mut target_exists, mut empty_span) = (false, call.head);
     let mut all_targets: HashMap<PathBuf, Span> = HashMap::new();
     for target in targets {
         if path.to_string_lossy() == target.item
@@ -232,6 +230,10 @@ fn rm(
                 for file in files {
                     match file {
                         Ok(ref f) => {
+                            if !target_exists {
+                                target_exists = true;
+                            }
+
                             // It is not appropriate to try and remove the
                             // current directory or its parent when using
                             // glob patterns.
@@ -253,12 +255,17 @@ fn rm(
                         }
                     }
                 }
+
+                // Target doesn't exists
+                if !target_exists && empty_span.eq(&call.head) {
+                    empty_span = target.span;
+                }
             }
             Err(e) => {
                 return Err(ShellError::GenericError(
                     e.to_string(),
                     e.to_string(),
-                    Some(call.head),
+                    Some(target.span),
                     None,
                     Vec::new(),
                 ))
@@ -270,15 +277,15 @@ fn rm(
         return Err(ShellError::GenericError(
             "No valid paths".into(),
             "no valid paths".into(),
-            Some(call.head),
+            Some(empty_span),
             None,
             Vec::new(),
         ));
     }
 
     Ok(all_targets
-        .into_iter()
-        .map(move |(f, _)| {
+        .into_keys()
+        .map(move |f| {
             let is_empty = || match f.read_dir() {
                 Ok(mut p) => p.next().is_none(),
                 Err(_) => false,

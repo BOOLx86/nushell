@@ -63,7 +63,7 @@ impl Command for WithEnv {
             },
             Example {
                 description: "Set by row(e.g. `open x.json` or `from json`)",
-                example: r#"echo '{"X":"Y","W":"Z"}'|from json|with-env $in { echo $env.X $env.W }"#,
+                example: r#"'{"X":"Y","W":"Z"}'|from json|with-env $in { echo $env.X $env.W }"#,
                 result: None,
             },
         ]
@@ -110,7 +110,7 @@ fn with_env(
                 // primitive values([X Y W Z])
                 for row in table.chunks(2) {
                     if row.len() == 2 {
-                        env.insert(row[0].as_string()?, (&row[1]).clone());
+                        env.insert(row[0].as_string()?, row[1].clone());
                     }
                     // TODO: else error?
                 }

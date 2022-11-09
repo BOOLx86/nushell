@@ -6,15 +6,26 @@ use crate::{
 };
 use core::panic;
 use std::borrow::Borrow;
-use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::{
-    collections::HashMap,
-    sync::{atomic::AtomicBool, Arc},
+    collections::{HashMap, HashSet, VecDeque},
+    sync::{
+        atomic::{AtomicBool, AtomicU32},
+        Arc, Mutex,
+    },
 };
 
 static PWD_ENV: &str = "PWD";
+
+// TODO: move to different file? where?
+/// An operation to be performed with the current buffer of the interactive shell.
+#[derive(Clone)]
+pub enum ReplOperation {
+    Append(String),
+    Insert(String),
+    Replace(String),
+}
 
 /// The core global engine state. This includes all global definitions as well as any global state that
 /// will persist for the whole session.
@@ -72,10 +83,15 @@ pub struct EngineState {
     pub env_vars: EnvVars,
     pub previous_env_vars: HashMap<String, Value>,
     pub config: Config,
+    pub pipeline_externals_state: Arc<(AtomicU32, AtomicU32)>,
+    pub repl_buffer_state: Arc<Mutex<Option<String>>>,
+    pub repl_operation_queue: Arc<Mutex<VecDeque<ReplOperation>>>,
     #[cfg(feature = "plugin")]
     pub plugin_signatures: Option<PathBuf>,
     #[cfg(not(windows))]
     sig_quit: Option<Arc<AtomicBool>>,
+    config_path: HashMap<String, PathBuf>,
+    pub history_session_id: i64,
 }
 
 pub const NU_VARIABLE_ID: usize = 0;
@@ -109,10 +125,15 @@ impl EngineState {
             env_vars: EnvVars::from([(DEFAULT_OVERLAY_NAME.to_string(), HashMap::new())]),
             previous_env_vars: HashMap::new(),
             config: Config::default(),
+            pipeline_externals_state: Arc::new((AtomicU32::new(0), AtomicU32::new(0))),
+            repl_buffer_state: Arc::new(Mutex::new(None)),
+            repl_operation_queue: Arc::new(Mutex::new(VecDeque::new())),
             #[cfg(feature = "plugin")]
             plugin_signatures: None,
             #[cfg(not(windows))]
             sig_quit: None,
+            config_path: HashMap::new(),
+            history_session_id: 0,
         }
     }
 
@@ -364,8 +385,7 @@ impl EngineState {
                 self.plugin_decls().try_for_each(|decl| {
                     // A successful plugin registration already includes the plugin filename
                     // No need to check the None option
-                    let (path, encoding, shell) =
-                        decl.is_plugin().expect("plugin should have file name");
+                    let (path, shell) = decl.is_plugin().expect("plugin should have file name");
                     let mut file_name = path
                         .to_str()
                         .expect("path was checked during registration as a str")
@@ -392,14 +412,10 @@ impl EngineState {
                                 None => "".into(),
                             };
 
-                            // Each signature is stored in the plugin file with the required
-                            // encoding, shell and signature
+                            // Each signature is stored in the plugin file with the shell and signature
                             // This information will be used when loading the plugin
                             // information when nushell starts
-                            format!(
-                                "register {} -e {} {} {}\n\n",
-                                file_name, encoding, shell_str, signature
-                            )
+                            format!("register {} {} {}\n\n", file_name, shell_str, signature)
                         })
                         .map_err(|err| ShellError::PluginFailedToLoad(err.to_string()))
                         .and_then(|line| {
@@ -527,6 +543,26 @@ impl EngineState {
             }
         }
 
+        None
+    }
+
+    pub fn which_module_has_decl(&self, name: &[u8]) -> Option<&[u8]> {
+        for (module_id, m) in self.modules.iter().enumerate() {
+            if m.has_decl(name) {
+                for overlay_frame in self.active_overlays(&[]).iter() {
+                    let module_name = overlay_frame.modules.iter().find_map(|(key, &val)| {
+                        if val == module_id {
+                            Some(key)
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(final_name) = module_name {
+                        return Some(&final_name[..]);
+                    }
+                }
+            }
+        }
         None
     }
 
@@ -753,6 +789,14 @@ impl EngineState {
     pub fn set_sig_quit(&mut self, sig_quit: Arc<AtomicBool>) {
         self.sig_quit = Some(sig_quit)
     }
+
+    pub fn set_config_path(&mut self, key: &str, val: PathBuf) {
+        self.config_path.insert(key.to_string(), val);
+    }
+
+    pub fn get_config_path(&self, key: &str) -> Option<&PathBuf> {
+        self.config_path.get(key)
+    }
 }
 
 /// A temporary extension to the global state. This handles bridging between the global state and the
@@ -767,6 +811,8 @@ pub struct StateWorkingSet<'a> {
     pub type_scope: TypeScope,
     /// Current working directory relative to the file being parsed right now
     pub currently_parsed_cwd: Option<PathBuf>,
+    /// All previously parsed module files. Used to protect against circular imports.
+    pub parsed_module_files: Vec<PathBuf>,
 }
 
 /// A temporary placeholder for expression types. It is used to keep track of the input types
@@ -942,6 +988,7 @@ impl<'a> StateWorkingSet<'a> {
             external_commands: vec![],
             type_scope: TypeScope::default(),
             currently_parsed_cwd: None,
+            parsed_module_files: vec![],
         }
     }
 

@@ -47,7 +47,8 @@ impl Expression {
                     | Operator::Equal
                     | Operator::NotEqual
                     | Operator::In
-                    | Operator::NotIn => 80,
+                    | Operator::NotIn
+                    | Operator::Append => 80,
                     Operator::BitAnd => 75,
                     Operator::BitXor => 70,
                     Operator::BitOr => 60,
@@ -169,6 +170,7 @@ impl Expression {
                 false
             }
             Expr::ImportPattern(_) => false,
+            Expr::Overlay(_) => false,
             Expr::Filepath(_) => false,
             Expr::Directory(_) => false,
             Expr::Float(_) => false,
@@ -337,6 +339,7 @@ impl Expression {
                     .replace_in_variable(working_set, new_var_id);
             }
             Expr::ImportPattern(_) => {}
+            Expr::Overlay(_) => {}
             Expr::Garbage => {}
             Expr::Nothing => {}
             Expr::GlobPattern(_) => {}
@@ -485,6 +488,7 @@ impl Expression {
                     .replace_span(working_set, replaced, new_span);
             }
             Expr::ImportPattern(_) => {}
+            Expr::Overlay(_) => {}
             Expr::Garbage => {}
             Expr::Nothing => {}
             Expr::GlobPattern(_) => {}
